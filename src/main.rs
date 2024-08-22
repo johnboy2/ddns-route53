@@ -2,6 +2,7 @@ use log::error;
 
 mod cli;
 mod config;
+mod ip_algorithms;
 
 
 #[tokio::main(flavor = "current_thread")]
