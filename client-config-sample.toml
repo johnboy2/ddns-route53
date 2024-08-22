@@ -1,0 +1,44 @@
+host_name = "home.example.com"
+
+## Define the credentials to use when communicating with AWS Route53.
+## These are all optional, and will fallback on defaults found in standard
+## AWS environment variables or configuration files. For more information, see
+## https://docs.aws.amazon.com/sdkref/latest/guide/creds-config-files.html
+#aws_profile = "default"
+#aws_secret_key = "AKIAIOSFODNN7EXAMPLE"
+#aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+#aws_region = "us-east-1"
+
+## The zone ID of the Route53-hosted zone where `host_name` is hosted. This is
+## an optimization only, and can be omitted. If omitted, this will be determined
+## through a dynamic runtime search (which the connecting SDK user must have
+## permission to perform).
+aws_route53_zone_id = "/hostedzone/ABCDEF12345678"
+
+## These affect how the public IP address is determined.
+##   - "default_public_ip" means that IP addresses on the system are checked
+##     for any that are globally routable. If any are found, they are used and
+##     searching stops.
+##   - "internet_gateway_protocol" performs a local network search for a router
+##     or other Internet gateway device with a WAN IP address that is globally
+##     routable. If any are found, they are used and searching stops.
+##     Note: This option only applies to `ipv4_algorithms`.
+##   - "web_service" connects to a URL of a public site that is expected to
+##     return our public IP address. If we get an address back that is globally
+##     routable, and is returned and searching stops.
+ipv4_algorithms = [
+    {type="default_public_ip"},
+    {type="internet_gateway_protocol", timeout_seconds=10},
+    {type="web_service", url="http://checkip.amazonaws.com/", timeout_seconds=10},
+    {type="web_service", url="https://api.ipify.org/", timeout_seconds=10},
+]
+ipv6_algorithms = [                                  # optional (default: [])
+    {type="default_public_ip"},
+    {type="web_service", url="https://api6.ipify.org/", timeout_seconds=10},
+]
+
+## Configures how long after submitting a change to wait for it to be fully
+## synchronized with Route53's nameservers, and how often to re-check.
+## These default to a timeout of 300 seconds, polling every 30 seconds.
+update_timeout_seconds = 600
+update_poll_seconds = 30
