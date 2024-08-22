@@ -1,6 +1,6 @@
 [package]
 name = "ddns-route53"
-description = "Automatically update a DNS record in an (AWS) Route53-hosted zone"
+description = "DDNS client for (AWS) Route53"
 keywords = ["DDNS", "Route53"]
 version = "0.1.0"
 edition = "2021"
