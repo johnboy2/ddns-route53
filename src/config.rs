@@ -166,7 +166,7 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
                     return Err("config:ipv4_algorithms can only have up to one default_public_ip".to_owned());
                 }
                 have_default = true;
-                descriptions.push(String::from("{type=default_public_ip}"));
+                descriptions.push(String::from("{type=\"default_public_ip\"}"));
                 functions.push(
                     Box::new(
                         || Box::pin(crate::ip_algorithms::get_default_public_ip_v4())
@@ -178,7 +178,7 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
                     return Err("config:ipv4_algorithms can only have up to one internet_gateway_protocol".to_owned());
                 }
                 have_igd = true;
-                let mut description = String::from("{type=internet_gateway_protocol");
+                let mut description = String::from("{type=\"internet_gateway_protocol\"");
                 let timeout = match timeout_seconds {
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
@@ -198,7 +198,7 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
                 if !have_web_service_url.insert(url.as_str()) {
                     return Err(format!("config:ipv4_algorithms can only have up to one web_service:[{}]", url));
                 }
-                let mut description = format!("{{type=web_service, url=\"{url}\"");
+                let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed = match reqwest::Url::parse(url) {
                     Ok(parsed) => parsed,
                     Err(e) => {
@@ -248,7 +248,7 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
                     return Err("config:ipv6_algorithms can only have up to one default_public_ip".to_owned());
                 }
                 have_default = true;
-                descriptions.push(String::from("{type=default_public_ip}"));
+                descriptions.push(String::from("{type=\"default_public_ip\"}"));
                 functions.push(
                     Box::new(
                         || Box::pin(crate::ip_algorithms::get_default_public_ip_v6())
@@ -263,7 +263,7 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
                 if !have_web_service_url.insert(url.as_str()) {
                     return Err(format!("config:ipv6_algorithms can only have up to one web_service:[{}]", url));
                 }
-                let mut description = format!("{{type=web_service, url=\"{url}\"");
+                let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed = match reqwest::Url::parse(url) {
                     Ok(parsed) => parsed,
                     Err(e) => {
