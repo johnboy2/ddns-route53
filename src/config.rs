@@ -5,12 +5,13 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::FnOnce;
+use std::ops::Fn;
 use std::pin::Pin;
 use std::time::Duration;
 use std::vec::Vec;
 
 use derivative::Derivative;
+use log::{debug, warn};
 use serde::Deserialize;
 
 
@@ -123,8 +124,8 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
 }
 
 
-type V4AlgoFn = dyn FnOnce() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv4Addr>, String>>>>;
-type V6AlgoFn = dyn FnOnce() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv6Addr>, String>>>>;
+type V4AlgoFn = dyn Fn() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv4Addr>, String>> + Send>> + Sync;
+type V6AlgoFn = dyn Fn() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv6Addr>, String>> + Send>> + Sync;
 
 
 #[derive(Derivative)]
@@ -216,7 +217,9 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
                 descriptions.push(description);
                 functions.push(
                     Box::new(
-                        move || Box::pin(crate::ip_algorithms::get_web_service_ip_v4(url_parsed, url_owned, timeout))
+                        move || Box::pin(crate::ip_algorithms::get_web_service_ip_v4(
+                            url_parsed.to_owned(), url_owned.to_owned(), timeout
+                        ))
                     )
                 )
             },
@@ -279,7 +282,9 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
                 descriptions.push(description);
                 functions.push(
                     Box::new(
-                        move || Box::pin(crate::ip_algorithms::get_web_service_ip_v6(url_parsed, url_owned, timeout))
+                        move || Box::pin(crate::ip_algorithms::get_web_service_ip_v6(
+                            url_parsed.to_owned(), url_owned.to_owned(), timeout
+                        ))
                     )
                 )
             },
@@ -315,6 +320,54 @@ impl Config {
             ipv6_algo_fns: v6_algos.functions,
             route53_zone_id: config_file.aws_route53_zone_id,
         })
+    }
+
+    pub async fn get_ipv4_addresses(&self) -> Vec::<Ipv4Addr> {
+        for (name, algo_fn) in self.ipv4_algorithms.iter().zip(self.ipv4_algo_fns.iter()) {
+            debug!("ipv4: Trying algorithm: {}", name);
+            let algo_result = algo_fn().await;
+            match algo_result {
+                Ok(ips) => {
+                    debug!("ipv4: got addresses: {:?}", &ips);
+                    if ips.is_empty() {
+                        debug!("ipv4: skipping empty result for algorithm: {}", name);
+                    } else {
+                        debug!("ipv4: return {} found address(es)", ips.len());
+                        return ips;
+                    }
+                },
+                Err(msg) => {
+                    warn!("ipv4: algorithm {} returned error: {}", name, msg);
+                }
+            };
+        }
+
+        warn!("ipv4: none of the configured algorithms found any results; returning empty-set.");
+        Vec::<Ipv4Addr>::new()
+    }
+
+    pub async fn get_ipv6_addresses(&self) -> Vec::<Ipv6Addr> {
+        for (name, algo_fn) in self.ipv6_algorithms.iter().zip(self.ipv6_algo_fns.iter()) {
+            debug!("ipv6: Trying algorithm: {}", name);
+            let algo_result = algo_fn().await;
+            match algo_result {
+                Ok(ips) => {
+                    debug!("ipv6: got addresses: {:?}", &ips);
+                    if ips.is_empty() {
+                        debug!("ipv6: skipping empty result for algorithm: {}", name);
+                    } else {
+                        debug!("ipv6: return {} found address(es)", ips.len());
+                        return ips;
+                    }
+                },
+                Err(msg) => {
+                    warn!("ipv6: algorithm {} returned error: {}", name, msg);
+                }
+            };
+        }
+
+        warn!("ipv6: none of the configured algorithms found any results; returning empty-set.");
+        Vec::<Ipv6Addr>::new()
     }
 }
  

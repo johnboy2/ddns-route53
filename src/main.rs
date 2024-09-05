@@ -1,5 +1,10 @@
+ #![feature(async_closure, async_fn_traits, type_alias_impl_trait)]
+
+use std::sync::Arc;
+
 use log::error;
 
+mod addresses;
 mod cli;
 mod config;
 mod ip_algorithms;
@@ -27,4 +32,23 @@ async fn main() {
     };
 
     println!("{:?}", config);
+    let arc_config = Arc::new(config);
+
+    let set = tokio::task::LocalSet::new();
+    let arc_config_ipv4 = arc_config.clone();
+    let fut_ipv4 = set.spawn_local(async move {
+        arc_config_ipv4.get_ipv4_addresses().await
+    });
+    let arc_config_ipv6 = arc_config.clone();
+    let fut_ipv6 = set.spawn_local(async move {
+        arc_config_ipv6.get_ipv6_addresses().await
+    });
+
+    let addresses = crate::addresses::Addresses { 
+        v4: fut_ipv4.await.unwrap(),
+        v6: fut_ipv6.await.unwrap()
+    };
+
+    println!("{:?}", addresses);
+
 }
