@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use log::error;
+use log::{debug, error, trace};
 
 mod addresses;
+// mod aws_route53;
 mod cli;
 mod config;
 mod ip_algorithms;
@@ -22,6 +23,7 @@ async fn main() {
             _ => log::Level::Trace,
         }
     ).unwrap();
+    debug!("Log-level set to {}", log::max_level());
 
     let config = match crate::config::Config::load(&args.config_path) {
         Ok(config) => config,
@@ -30,8 +32,7 @@ async fn main() {
             return;
         }
     };
-
-    println!("{:?}", config);
+    trace!("{:?}", config);
     let arc_config = Arc::new(config);
 
     let set = tokio::task::LocalSet::new();
@@ -54,7 +55,6 @@ async fn main() {
         v4: fut_ipv4.await.unwrap(),
         v6: fut_ipv6.await.unwrap()
     };
-
-    println!("{:?}", addresses);
+    debug!("Got {:?}", addresses);
 
 }
