@@ -35,14 +35,19 @@ async fn main() {
     let arc_config = Arc::new(config);
 
     let set = tokio::task::LocalSet::new();
-    let arc_config_ipv4 = arc_config.clone();
-    let fut_ipv4 = set.spawn_local(async move {
-        arc_config_ipv4.get_ipv4_addresses().await
-    });
-    let arc_config_ipv6 = arc_config.clone();
-    let fut_ipv6 = set.spawn_local(async move {
-        arc_config_ipv6.get_ipv6_addresses().await
-    });
+
+    let fut_ipv4 = {
+        let arc_config = arc_config.clone();
+        set.spawn_local(async move {
+            arc_config.get_ipv4_addresses().await
+        })
+    };
+    let fut_ipv6 = {
+        let arc_config = arc_config.clone();
+        set.spawn_local(async move {
+            arc_config.get_ipv6_addresses().await
+        })
+    };
 
     set.await;
     let addresses = crate::addresses::Addresses { 
