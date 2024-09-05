@@ -44,6 +44,7 @@ async fn main() {
         arc_config_ipv6.get_ipv6_addresses().await
     });
 
+    set.await;
     let addresses = crate::addresses::Addresses { 
         v4: fut_ipv4.await.unwrap(),
         v6: fut_ipv6.await.unwrap()
