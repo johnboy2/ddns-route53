@@ -5,7 +5,7 @@ use std::sync::Arc;
 use log::{debug, error, trace};
 
 mod addresses;
-// mod aws_route53;
+mod aws_route53;
 mod cli;
 mod config;
 mod ip_algorithms;
@@ -25,7 +25,7 @@ async fn main() {
     ).unwrap();
     debug!("Log-level set to {}", log::max_level());
 
-    let config = match crate::config::Config::load(&args.config_path) {
+    let config = match crate::config::Config::load(&args.config_path).await {
         Ok(config) => config,
         Err(e) => {
             error!("{e}");

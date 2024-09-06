@@ -50,7 +50,7 @@ struct FileConfig {
     ipv4_algorithms: Vec::<AlgorithmSpecification>,
     ipv6_algorithms: Vec::<AlgorithmSpecification>,
     aws_profile: Option<String>,
-    aws_secret_key: Option<String>,
+    aws_access_key_id: Option<String>,
     aws_secret_access_key: Option<String>,
     aws_region: Option<String>,
     aws_route53_zone_id: Option<String>,
@@ -143,6 +143,7 @@ pub struct Config {
     ipv6_algo_fns: Vec::<Box<V6AlgoFn>>,
     ipv6_algorithms: Vec::<String>,
 
+    route53_client: ::aws_sdk_route53::Client,
     route53_zone_id: Option::<String>,
 }
 
@@ -296,7 +297,7 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
 
 
 impl Config {
-    pub fn load(config_path: &String) -> Result<Self, String> {
+    pub async fn load(config_path: &String) -> Result<Self, String> {
         let config_file = read_config_file(config_path)?;
 
         let poll_interval = process_timeout(
@@ -310,6 +311,13 @@ impl Config {
         let v4_algos = build_v4_algos(&config_file.ipv4_algorithms)?;
         let v6_algos = build_v6_algos(&config_file.ipv6_algorithms)?;
 
+        let client = crate::aws_route53::get_client(
+            &config_file.aws_profile,
+            &config_file.aws_access_key_id,
+            &config_file.aws_secret_access_key,
+            &config_file.aws_region
+        ).await;
+
         Ok(Self {
             host_name: config_file.host_name,
             update_poll_interval: poll_interval,
@@ -318,6 +326,7 @@ impl Config {
             ipv4_algo_fns: v4_algos.functions,
             ipv6_algorithms: v6_algos.descriptions,
             ipv6_algo_fns: v6_algos.functions,
+            route53_client: client,
             route53_zone_id: config_file.aws_route53_zone_id,
         })
     }
