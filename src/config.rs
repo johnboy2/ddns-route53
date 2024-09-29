@@ -131,9 +131,9 @@ type V6AlgoFn = dyn Fn() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv6Addr>
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct Config {
-    host_name: String,
-    update_poll_interval: Duration,
-    update_timeout: Duration,
+    pub host_name: String,
+    pub update_poll_interval: Duration,
+    pub update_timeout: Duration,
 
     #[derivative(Debug="ignore")]
     ipv4_algo_fns: Vec::<Box<V4AlgoFn>>,
@@ -143,8 +143,8 @@ pub struct Config {
     ipv6_algo_fns: Vec::<Box<V6AlgoFn>>,
     ipv6_algorithms: Vec::<String>,
 
-    route53_client: ::aws_sdk_route53::Client,
-    route53_zone_id: Option::<String>,
+    pub route53_client: ::aws_sdk_route53::Client,
+    pub route53_zone_id: Option::<String>,
 }
 
 
