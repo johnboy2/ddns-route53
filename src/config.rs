@@ -319,7 +319,7 @@ impl Config {
         ).await;
 
         Ok(Self {
-            host_name: config_file.host_name,
+            host_name: config_file.host_name.to_lowercase(),
             update_poll_interval: poll_interval,
             update_timeout: timeout,
             ipv4_algorithms: v4_algos.descriptions,
