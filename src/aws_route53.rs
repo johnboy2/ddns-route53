@@ -117,6 +117,7 @@ pub async fn get_host_addresses_for_single_rr_type<IPTYPE>(
                     break;
                 }
 
+                debug!("Got name: [{}] (type: {})", rrs.name, rrs.r#type);
                 match &rrs.resource_records {
                     Some(values) => {
                         for value_struct in values.iter() {
