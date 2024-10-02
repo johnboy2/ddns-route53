@@ -54,6 +54,7 @@ struct FileConfig {
     aws_secret_access_key: Option<String>,
     aws_region: Option<String>,
     aws_route53_zone_id: Option<String>,
+    aws_route53_record_ttl: i64,
 }
 
 
@@ -67,6 +68,35 @@ fn process_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String>
         }
     }
     Ok(Duration::from_secs_f64(value))
+}
+
+
+fn process_bounded_integer(value: i64, minimum: Option<i64>, maximum: Option<i64>) -> Result<i64, String> {
+    loop {
+        if minimum.is_some_and(|min| value < min) {
+            // Lower than minimum
+            break;
+        }
+
+        if maximum.is_some_and(|max| max < value) {
+            // Larger than maximum
+            break;
+        }
+
+        return Ok(value);
+    }
+    
+    Err(
+        if minimum.is_some() {
+            if maximum.is_some() {
+                format!("value {} is outside of required range {}-{}", value, minimum.unwrap(), maximum.unwrap())
+            } else {
+                format!("value {} cannot be less than {}", value, minimum.unwrap())
+            }
+        } else {
+            format!("value {} cannot be greater than {}", value, maximum.unwrap())
+        }
+    )
 }
 
 
@@ -145,6 +175,7 @@ pub struct Config {
 
     pub route53_client: ::aws_sdk_route53::Client,
     pub route53_zone_id: Option::<String>,
+    pub route53_record_ttl: i64,
 }
 
 
@@ -308,6 +339,7 @@ impl Config {
             config_file.update_timeout_seconds, 
             Some(MAX_UPDATE_TIMEOUT_SECONDS)
         )?;
+        let ttl = process_bounded_integer(config_file.aws_route53_record_ttl, Some(0i64), Some(2147483647i64))?;
         let v4_algos = build_v4_algos(&config_file.ipv4_algorithms)?;
         let v6_algos = build_v6_algos(&config_file.ipv6_algorithms)?;
 
@@ -328,6 +360,7 @@ impl Config {
             ipv6_algo_fns: v6_algos.functions,
             route53_client: client,
             route53_zone_id: config_file.aws_route53_zone_id,
+            route53_record_ttl: ttl,
         })
     }
 

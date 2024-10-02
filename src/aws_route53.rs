@@ -179,6 +179,7 @@ impl IpAny for Ipv6Addr {}
 
 fn _build_r53_change_set(
         host_name: String,
+        ttl: i64,
         addresses: &Vec::<impl IpAny + Sized>,
         rr_type: aws_sdk_route53::types::RrType,
         action: aws_sdk_route53::types::ChangeAction
@@ -201,6 +202,7 @@ fn _build_r53_change_set(
         .set_name(Some(host_name))
         .set_type(Some(rr_type))
         .set_resource_records(Some(rr_vec))
+        .set_ttl(Some(ttl))
         .build()
     {
         Ok(rrs) => rrs,
@@ -232,6 +234,7 @@ pub async fn set_host_addresses(
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
+                    config.route53_record_ttl,
                     &current_addresses.v4, 
                     aws_sdk_route53::types::RrType::A, 
                     aws_sdk_route53::types::ChangeAction::Delete
@@ -241,6 +244,7 @@ pub async fn set_host_addresses(
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
+                    config.route53_record_ttl,
                     &desired_addresses.v4, 
                     aws_sdk_route53::types::RrType::A, 
                     aws_sdk_route53::types::ChangeAction::Upsert
@@ -254,6 +258,7 @@ pub async fn set_host_addresses(
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
+                    config.route53_record_ttl,
                     &current_addresses.v6, 
                     aws_sdk_route53::types::RrType::Aaaa, 
                     aws_sdk_route53::types::ChangeAction::Delete
@@ -263,6 +268,7 @@ pub async fn set_host_addresses(
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
+                    config.route53_record_ttl,
                     &desired_addresses.v6, 
                     aws_sdk_route53::types::RrType::Aaaa,
                     aws_sdk_route53::types::ChangeAction::Upsert
