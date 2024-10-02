@@ -12,6 +12,7 @@ use std::vec::Vec;
 
 use derivative::Derivative;
 use log::{debug, warn};
+use regex::Regex;
 use serde::Deserialize;
 
 
@@ -100,6 +101,16 @@ fn process_bounded_integer(value: i64, minimum: Option<i64>, maximum: Option<i64
 }
 
 
+fn validate_host_name(name: &str) -> Result<(), String> {
+    let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](\\.[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$").unwrap();
+    if ptn.is_match(name) {
+        return Ok(());
+    } else {
+        return Err("Invalid host name".to_owned());
+    }
+}
+
+
 fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     let f = match File::open(config_path) {
         Ok(f) => f,
@@ -162,6 +173,7 @@ type V6AlgoFn = dyn Fn() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv6Addr>
 #[derivative(Debug)]
 pub struct Config {
     pub host_name: String,
+    pub host_name_normalized: String,
     pub update_poll_interval: Duration,
     pub update_timeout: Duration,
 
@@ -331,6 +343,24 @@ impl Config {
     pub async fn load(config_path: &String) -> Result<Self, String> {
         let config_file = read_config_file(config_path)?;
 
+        let host_name_normalized = {
+            let name_lower = config_file.host_name.to_lowercase();
+            let mut name_lower_idna = match
+                idna::domain_to_ascii_cow(
+                    name_lower.as_bytes(), idna::AsciiDenyList::URL
+                )
+                {
+                    Ok(r) => r,
+                    Err(e) => { return Err(format!("Failed to convert hostname to IDNA: {}", e.to_string())); }
+                }.into_owned()
+            ;
+            validate_host_name(name_lower_idna.as_str())?;
+            if !name_lower_idna.ends_with(".") {
+                name_lower_idna += ".";
+            }
+            name_lower_idna
+        };
+
         let poll_interval = process_timeout(
             config_file.update_poll_seconds, 
             Some(MAX_UPDATE_POLL_SECONDS)
@@ -351,7 +381,8 @@ impl Config {
         ).await;
 
         Ok(Self {
-            host_name: config_file.host_name.to_lowercase(),
+            host_name: config_file.host_name,
+            host_name_normalized,
             update_poll_interval: poll_interval,
             update_timeout: timeout,
             ipv4_algorithms: v4_algos.descriptions,

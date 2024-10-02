@@ -55,7 +55,7 @@ async fn main() {
         set.spawn_local(async move {
             let config = arc_config.as_ref();
             crate::aws_route53::get_host_addresses(
-                &config.route53_client, &config.host_name, &config.route53_zone_id
+                &config.route53_client, &config.host_name_normalized, &config.route53_zone_id
             ).await
         })
     };
