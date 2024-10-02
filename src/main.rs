@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
 
 mod addresses;
 mod aws_route53;
@@ -86,7 +86,7 @@ async fn main() {
     match crate::aws_route53::set_host_addresses(
         &*arc_config, &addresses_current, &addresses_route53, 
     ).await {
-        Ok(()) => {debug!("Update successful")},
+        Ok(()) => {info!("Update successful")},
         Err(e) => {error!("Update failed: {e}")}
     };
 
