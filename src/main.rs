@@ -1,6 +1,7 @@
  #![feature(async_closure, async_fn_traits, type_alias_impl_trait)]
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use log::{debug, error, info, trace, warn};
 
@@ -15,23 +16,68 @@ mod ip_algorithms;
 async fn main() {
     let args = crate::cli::parse_cli_args();
 
-    simple_logger::init_with_level(
-        match args.verbose {
-            0 => log::Level::Warn,
-            1 => log::Level::Info,
-            2 => log::Level::Debug,
-            _ => log::Level::Trace,
-        }
-    ).unwrap();
-    debug!("Log-level set to {}", log::max_level());
+    let log_stdout = fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{} [{}] {}: {}",
+                humantime::format_rfc3339_seconds(SystemTime::now()),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .level_for(
+            env!("CARGO_CRATE_NAME"),
+            match args.verbose {
+                0 => log::LevelFilter::Warn,
+                1 => log::LevelFilter::Info,
+                2 => log::LevelFilter::Debug,
+                _ => log::LevelFilter::Trace,
+            }
+        )
+        .level(
+            match args.log_other {
+                0 => log::LevelFilter::Warn,
+                1 => log::LevelFilter::Info,
+                2 => log::LevelFilter::Debug,
+                _ => log::LevelFilter::Trace,
+            }
+        )
+        .chain(std::io::stdout())
+    ;
 
     let config = match crate::config::Config::load(&args.config_path).await {
-        Ok(config) => config,
+        Ok(config) => {
+            let log_file = config.get_file_logger();
+            match log_file {
+                Ok(log_file) => {
+                    match log_file {
+                        Some(log_file) => {
+                            fern::Dispatch::new()
+                                .chain(log_stdout)
+                                .chain(log_file)
+                                .apply()
+                                .unwrap()  // force panic if multiple loggers
+                            ;
+                        },
+                        None => {}
+                    }
+                },
+                Err(e) => {
+                    log_stdout.apply().unwrap();
+                    error!("{e}");
+                    return;        
+                }
+            };
+            config
+        },
         Err(e) => {
+            log_stdout.apply().unwrap();
             error!("{e}");
             return;
         }
     };
+
     trace!("{:?}", config);
     let arc_config = Arc::new(config);
 
@@ -75,7 +121,7 @@ async fn main() {
     debug!("Got route53: {:?}", addresses_route53);
 
     if addresses_current == addresses_route53 {
-        debug!("Current addresses match route53 configuration; no update required.");
+        info!("Current addresses match route53 configuration; no update required.");
         return;
     } else if args.no_update {
         warn!("Current addresses DO NOT match configuration, but not updating due to --no_update");

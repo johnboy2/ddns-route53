@@ -7,11 +7,11 @@ use std::io::Seek;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Fn;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
 use derivative::Derivative;
-use log::{debug, warn};
+use log::{debug, warn, LevelFilter};
 use regex::Regex;
 use serde::Deserialize;
 
@@ -22,7 +22,6 @@ fn default_update_timeout_seconds() -> f64 { return 300.0; }
 static MAX_CONFIG_FILE_SIZE: u64 = 65536;
 static MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
 static MAX_UPDATE_TIMEOUT_SECONDS: f64 = 3600.0;
-
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
@@ -56,6 +55,9 @@ struct FileConfig {
     aws_region: Option<String>,
     aws_route53_zone_id: Option<String>,
     aws_route53_record_ttl: i64,
+    log_file: Option<String>,
+    log_level: Option<String>,
+    log_level_other: Option<String>,
 }
 
 
@@ -188,6 +190,9 @@ pub struct Config {
     pub route53_client: ::aws_sdk_route53::Client,
     pub route53_zone_id: Option::<String>,
     pub route53_record_ttl: i64,
+    log_file: Option::<String>,
+    log_level: LevelFilter,
+    log_level_other: LevelFilter,
 }
 
 
@@ -339,6 +344,24 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
 }
 
 
+fn parse_log_level(name: &Option<String>, default: LevelFilter) -> Result<LevelFilter, String> {
+    match name {
+        Some(name) => {
+            match name.as_str() {
+                "off" => Ok(LevelFilter::Off),
+                "error" => Ok(LevelFilter::Error),
+                "warn" => Ok(LevelFilter::Warn),
+                "info" => Ok(LevelFilter::Info),
+                "debug" => Ok(LevelFilter::Debug),
+                "trace" => Ok(LevelFilter::Trace),
+                _ => Err(format!("Unknown log-level: \"{}\"", name.as_str()))
+            }
+        },
+        None => Ok(default)
+    }
+}
+
+
 impl Config {
     pub async fn load(config_path: &String) -> Result<Self, String> {
         let config_file = read_config_file(config_path)?;
@@ -379,7 +402,7 @@ impl Config {
             &config_file.aws_secret_access_key,
             &config_file.aws_region
         ).await;
-
+   
         Ok(Self {
             host_name: config_file.host_name,
             host_name_normalized,
@@ -392,7 +415,36 @@ impl Config {
             route53_client: client,
             route53_zone_id: config_file.aws_route53_zone_id,
             route53_record_ttl: ttl,
+            log_file: config_file.log_file,
+            log_level: parse_log_level(&config_file.log_level, LevelFilter::Info)?,
+            log_level_other: parse_log_level(&config_file.log_level_other, LevelFilter::Warn)?,
         })
+    }
+
+    pub fn get_file_logger(&self) -> Result::<Option<fern::Dispatch>, String> {
+        if self.log_file.is_none() {
+            return Ok(None);
+        }
+        let log = fern::Dispatch::new()
+            .format(|out, message, record| {
+                out.finish(format_args!(
+                    "{} [{}] {}: {}",
+                    humantime::format_rfc3339_seconds(SystemTime::now()),
+                    record.target(),
+                    record.level(),
+                    message
+                ))
+            })
+            .level_for(env!("CARGO_CRATE_NAME"), self.log_level)
+            .level(self.log_level_other)
+            .chain(
+                match fern::log_file(self.log_file.as_ref().unwrap()) {
+                    Ok(log) => log,
+                    Err(e) => { return Err(format!("{}", e.to_string())); }
+                }
+            )
+        ;
+        Ok(Some(log))
     }
 
     pub async fn get_ipv4_addresses(&self) -> Vec::<Ipv4Addr> {

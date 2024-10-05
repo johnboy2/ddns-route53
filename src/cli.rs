@@ -14,9 +14,13 @@ pub struct Args {
     #[arg(short, long)]
     pub no_update: bool,
 
-    /// Increase logging verbosity (may be used more than once)
+    /// Increase console logging verbosity (may be used more than once)
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+
+    /// Increase console logging for dependent libraries (may be used more than once)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub log_other: u8,
 }
 
 
