@@ -7,6 +7,7 @@ use aws_sdk_route53::Client;
 use aws_sdk_route53::types::{ResourceRecord, RrType};
 use aws_types::region::Region;
 use futures::join;
+use log::{debug, error};
 use tokio::time::{sleep, timeout};
 
 use crate::addresses::Addresses;
@@ -193,7 +194,7 @@ fn _build_r53_change_set(
             .build()
         {
             Ok(r) => r,
-            Err(e) => { return Err(e.to_string()) }
+            Err(e) => { return Err(format!("convert ip to RR: {}", e.to_string())) }
         };
         rr_vec.push(rr);
     }
@@ -207,7 +208,7 @@ fn _build_r53_change_set(
         .build()
     {
         Ok(rrs) => rrs,
-        Err(e) => { return Err(e.to_string()) }
+        Err(e) => { return Err(format!("building rrs: {}", e.to_string())) }
     };
     let chg = match
         aws_sdk_route53::types::Change::builder()
@@ -216,7 +217,7 @@ fn _build_r53_change_set(
         .build()
     {
         Ok(chg) => chg,
-        Err(e) => { return Err(e.to_string()) }
+        Err(e) => { return Err(format!("building change set: {}", e.to_string())) }
     };
 
     Ok(chg)
@@ -234,7 +235,7 @@ pub async fn set_host_addresses(
         if desired_addresses.v4.is_empty() {
             changes.push(
                 _build_r53_change_set(
-                    config.host_name.to_owned(), 
+                    config.host_name.to_owned(),
                     config.route53_record_ttl,
                     &current_addresses.v4, 
                     aws_sdk_route53::types::RrType::A, 
@@ -291,7 +292,7 @@ pub async fn set_host_addresses(
             .build()
         {
             Ok(cb) => cb,
-            Err(e) => { return Err(e.to_string()) }
+            Err(e) => { return Err(format!("building change batch: {}", e.to_string())) }
         }
     ;
     let change_fut = 
@@ -308,7 +309,14 @@ pub async fn set_host_addresses(
     };
     let change_output = match timeout_output {
         Ok(output) => output,
-        Err(e) => { return Err(e.to_string()) }
+        Err(e) => {
+            let rr = e.raw_response().unwrap();
+            let msg = String::from_utf8_lossy(
+                rr.body().bytes().unwrap()
+            );
+            error!("SDK returned error: {}", msg);
+            return Err(format!("change result: {}", e.to_string()))
+        }
     };
 
     let mut ci = change_output.change_info.unwrap();
@@ -317,15 +325,17 @@ pub async fn set_host_addresses(
             return Ok(());
         }
 
+        debug!("Change is not yet synchronized.");
         let now = Instant::now();
         let time_elapsed = now - start_time;
-        if time_elapsed <= config.update_timeout {
+        if config.update_timeout <= time_elapsed {
             return Err("Timed out waiting for change to synchronize".to_owned());
         }
         let time_remaining = expiry_time - now;
 
         sleep(std::cmp::min(time_remaining, config.update_poll_interval)).await;
 
+        debug!("Re-checking whether change is synchronized...");
         let output =
             match
                 config.route53_client.get_change()
@@ -334,7 +344,7 @@ pub async fn set_host_addresses(
                 .await
             {
                 Ok(output) => output,
-                Err(e) => { return Err(e.to_string()) }
+                Err(e) => { return Err(format!("get change error: {}", e.to_string())) }
             }
         ;
         ci = output.change_info.unwrap();
