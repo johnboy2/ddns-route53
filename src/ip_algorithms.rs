@@ -153,8 +153,9 @@ pub async fn get_default_public_ip_v4() -> Result::<Vec::<Ipv4Addr>, String> {
 
     let mut result = std::vec::Vec::<Ipv4Addr>::new();
     for ip_net in &default_interface.ipv4 {
-        if ipv4_is_global(&ip_net.addr) {
-            result.push(ip_net.addr.to_owned())
+        let ip_net_addr = ip_net.addr();
+        if ipv4_is_global(&ip_net_addr) {
+            result.push(ip_net_addr);
         }
     }
 
@@ -239,8 +240,9 @@ pub async fn get_default_public_ip_v6() -> Result::<Vec::<Ipv6Addr>, String> {
 
     let mut result = std::vec::Vec::<Ipv6Addr>::new();
     for ip_net in &default_interface.ipv6 {
-        if ipv6_is_global(&ip_net.addr) {
-            result.push(ip_net.addr.to_owned())
+        let ip_net_addr = ip_net.addr();
+        if ipv6_is_global(&ip_net_addr) {
+            result.push(ip_net_addr)
         }
     }
 
