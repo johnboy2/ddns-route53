@@ -1,5 +1,3 @@
- #![feature(async_closure, async_fn_traits, type_alias_impl_trait)]
-
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -121,7 +119,7 @@ async fn main() {
     debug!("Got route53: {:?}", addresses_route53);
 
     if addresses_current == addresses_route53 {
-        info!("Current addresses match route53 configuration; no update required.");
+        debug!("Current addresses match route53 configuration; no update required.");
         return;
     } else if args.no_update {
         warn!("Current addresses DO NOT match configuration, but not updating due to --no_update");
