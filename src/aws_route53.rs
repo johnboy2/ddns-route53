@@ -139,7 +139,10 @@ pub async fn get_host_addresses_for_single_rr_type<IPTYPE>(
                                 Ok(ip) => { result.push(ip) },
                                 Err(e) => {
                                     return Err(
-                                        format!("Got bad 'A' record value back from route53: \"{}\": {}", value_struct.value, e.to_string())
+                                        format!(
+                                            "Got bad '{}' record value back from route53: \"{}\": {}",
+                                            rrtype.as_str(), value_struct.value, e.to_string()
+                                        )
                                     )
                                 }
                             }
