@@ -64,10 +64,9 @@ struct FileConfig {
 fn process_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String> {
     if value < 0.0 {
         return Err(format!("cannot be negative: {}", value));
-    } else if maximum.is_some() {
-        let maximum = maximum.unwrap();
-        if maximum < value {
-            return Err(format!("cannot exceed {}: {}", maximum, value));
+    } else if let Some(max) = maximum {
+        if max < value {
+            return Err(format!("cannot exceed {}: {}", max, value));
         }
     }
     Ok(Duration::from_secs_f64(value))
@@ -145,14 +144,11 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     }
     
     let mut content = String::new();
-    match reader.read_to_string(&mut content) {
-        Ok(_size) => {},
-        Err(e) => {
-            return Err(format!(
-                "Error reading file [{config_path}]: {}", e.to_string()
-            ));
-        }
-    };
+    if let Some(error) = reader.read_to_string(&mut content).err() {
+        return Err(format!(
+            "Error reading file [{config_path}]: {}", error.to_string()
+        ));
+    }
 
     let file_config: FileConfig = match toml::from_str(content.as_str()) {
         Ok(value) => value,

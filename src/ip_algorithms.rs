@@ -117,17 +117,14 @@ async fn get_web_service_document(
         }
     };
 
-    match response.content_length() {
-        Some(cl) => {
-            if MAX_WEB_SERVICE_DOCUMENT_LENGTH < cl {
-                return Err(format!(
-                    "Result body from URL \"{}\": Content-Length ({}) too large (max={})",
-                    url_string, cl, MAX_WEB_SERVICE_DOCUMENT_LENGTH
-                ));
-            }
-        },
-        None => {}
-    };
+    if let Some(cl) = response.content_length() {
+        if MAX_WEB_SERVICE_DOCUMENT_LENGTH < cl {
+            return Err(format!(
+                "Result body from URL \"{}\": Content-Length ({}) too large (max={})",
+                url_string, cl, MAX_WEB_SERVICE_DOCUMENT_LENGTH
+            ));
+        }
+    }
 
     // TODO: implement a maximum read size for a streaming response
 

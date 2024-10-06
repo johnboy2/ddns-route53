@@ -49,16 +49,13 @@ async fn main() {
             let log_file = config.get_file_logger();
             match log_file {
                 Ok(log_file) => {
-                    match log_file {
-                        Some(log_file) => {
-                            fern::Dispatch::new()
-                                .chain(log_stdout)
-                                .chain(log_file)
-                                .apply()
-                                .unwrap()  // force panic if multiple loggers
-                            ;
-                        },
-                        None => {}
+                    if let Some(log_file) = log_file {
+                        fern::Dispatch::new()
+                            .chain(log_stdout)
+                            .chain(log_file)
+                            .apply()
+                            .unwrap()  // force panic if multiple loggers
+                        ;
                     }
                 },
                 Err(e) => {
