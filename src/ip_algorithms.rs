@@ -161,6 +161,7 @@ pub async fn get_default_public_ip_v4() -> Result::<Vec::<Ipv4Addr>, String> {
 
 
 pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec::<Ipv4Addr>, String> {
+    // This algorithm blocks, so we spin it off into its own thread.
     let thread_result: Result<Result<Vec<Ipv4Addr>, String>, tokio::task::JoinError> = tokio::task::spawn_blocking(move || {
         let search_option = igd_next::SearchOptions {
             timeout: Some(timeout),

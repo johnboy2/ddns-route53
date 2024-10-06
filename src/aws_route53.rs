@@ -69,6 +69,9 @@ fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
         return true;
     }
     if host_lowercase.ends_with(domain.as_str()) {
+        // While this would match "host.domain.com" in "domain.com" (which we want),
+        // it would also match "mydomain.com" against "domain.com" (which we don't want).
+        // So we must check that whatever precedes the domain in the host is a period.
         let host = host_lowercase.as_bytes();
         let domain = domain.as_bytes();
         let maybe_separator = host[host.len() - domain.len() - 1];
@@ -243,6 +246,7 @@ pub async fn set_host_addresses(
  
     if desired_addresses.v4 != current_addresses.v4 {
         if desired_addresses.v4.is_empty() {
+            // Need to delete the existing resource record
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(),
@@ -253,6 +257,7 @@ pub async fn set_host_addresses(
                 )?
             );
         } else {
+            // Whether we're updating an existing, or inserting new, we can do both with an 'Upsert' operation
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
@@ -267,6 +272,7 @@ pub async fn set_host_addresses(
  
     if desired_addresses.v6 != current_addresses.v6 {
         if desired_addresses.v6.is_empty() {
+            // Need to delete the existing resource record
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
@@ -277,6 +283,7 @@ pub async fn set_host_addresses(
                 )?
             );
         } else {
+            // Whether we're updating an existing, or inserting new, we can do both with an 'Upsert' operation
             changes.push(
                 _build_r53_change_set(
                     config.host_name.to_owned(), 
