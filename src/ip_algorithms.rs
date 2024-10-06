@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::vec::Vec;
 
+use log::debug;
 use netdev::Interface;
 
 
@@ -153,6 +154,11 @@ pub async fn get_default_public_ip_v4() -> Result::<Vec::<Ipv4Addr>, String> {
         let ip_net_addr = ip_net.addr();
         if ipv4_is_global(&ip_net_addr) {
             result.push(ip_net_addr);
+        } else {
+            debug!(
+                "Ignoring address [{}] on default interface: address is non-global",
+                ip_net_addr
+            );
         }
     }
 
@@ -178,15 +184,17 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec::<Ipv4Addr>, String>
 
         match gateway.get_external_ip() {
             Ok(ip) => {
-                match ip {
-                    std::net::IpAddr::V4(v4) => {
+                if let std::net::IpAddr::V4(v4) = ip {
+                    if ipv4_is_global(&v4) {
                         return Ok(vec![v4]);
-                    },
-                    _ => {
-                        // Silently ignore this case
-                        return Ok(Vec::<Ipv4Addr>::new())
+                    } else {
+                        debug!(
+                            "Ignoring address [{}] reported by internet gateway: address is non-global",
+                            v4
+                        );            
                     }
                 }
+                return Ok(Vec::<Ipv4Addr>::new());
             },
             Err(e) => {
                 return Err(
@@ -216,7 +224,16 @@ pub async fn get_web_service_ip_v4(url: reqwest::Url, url_string: String, timeou
     let mut result = Vec::<Ipv4Addr>::new();
     for line in body.as_str().lines() {
         match Ipv4Addr::from_str(line) {
-            Ok(ip) => { result.push(ip) },
+            Ok(ip) => {
+                if ipv4_is_global(&ip) {
+                    result.push(ip)
+                } else {
+                    debug!(
+                        "Ignoring address [{}] reported by web-service:{}: address is non-global",
+                        ip, url_string
+                    );
+                }
+            },
             Err(e) => {
                 return Err(format!(
                     "Failed to parse result as IPv4 address: \"{}\": {}",
@@ -241,6 +258,11 @@ pub async fn get_default_public_ip_v6() -> Result::<Vec::<Ipv6Addr>, String> {
         let ip_net_addr = ip_net.addr();
         if ipv6_is_global(&ip_net_addr) {
             result.push(ip_net_addr)
+        } else {
+            debug!(
+                "Ignoring address [{}] on default interface: address is non-global",
+                ip_net_addr
+            );
         }
     }
 
@@ -256,7 +278,16 @@ pub async fn get_web_service_ip_v6(url: reqwest::Url, url_string: String, timeou
     let mut result = Vec::<Ipv6Addr>::new();
     for line in body.as_str().lines() {
         match Ipv6Addr::from_str(line) {
-            Ok(ip) => { result.push(ip) },
+            Ok(ip) => { 
+                if ipv6_is_global(&ip) {
+                    result.push(ip)
+                } else {
+                    debug!(
+                        "Ignoring address [{}] reported by web-service:{}: address is non-global",
+                        ip, url_string
+                    );
+                }
+            },
             Err(e) => {
                 return Err(format!(
                     "Failed to parse result as IPv6 address: \"{}\": {}",
