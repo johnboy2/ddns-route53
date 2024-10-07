@@ -113,7 +113,9 @@ fn check_bounded_integer(
 }
 
 fn validate_host_name(name: &str) -> Result<(), String> {
-    let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](\\.[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$").unwrap();
+    let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](\\.[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
+        .expect("hard-coded regex should always be valid")
+    ;
     if ptn.is_match(name) {
         return Ok(());
     } else {
@@ -150,7 +152,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
         ));
     }
     if file_size != 0 {
-        reader.seek(std::io::SeekFrom::Start(0)).unwrap();
+        reader.seek(std::io::SeekFrom::Start(0)).expect("seek to start should always work");
     }
 
     let mut content = String::new();
@@ -452,28 +454,29 @@ impl Config {
     }
 
     pub fn get_file_logger(&self) -> Result<Option<fern::Dispatch>, String> {
-        if self.log_file.is_none() {
+        if let Some(log_file) = &self.log_file {
+            let log = fern::Dispatch::new()
+                .format(|out, message, record| {
+                    out.finish(format_args!(
+                        "{} [{}] {}: {}",
+                        humantime::format_rfc3339_seconds(SystemTime::now()),
+                        record.target(),
+                        record.level(),
+                        message
+                    ))
+                })
+                .level_for(env!("CARGO_CRATE_NAME"), self.log_level)
+                .level(self.log_level_other)
+                .chain(match fern::log_file(log_file) {
+                    Ok(log) => log,
+                    Err(e) => {
+                        return Err(format!("{}", e.to_string()));
+                    }
+                });
+            Ok(Some(log))
+        } else {
             return Ok(None);
         }
-        let log = fern::Dispatch::new()
-            .format(|out, message, record| {
-                out.finish(format_args!(
-                    "{} [{}] {}: {}",
-                    humantime::format_rfc3339_seconds(SystemTime::now()),
-                    record.target(),
-                    record.level(),
-                    message
-                ))
-            })
-            .level_for(env!("CARGO_CRATE_NAME"), self.log_level)
-            .level(self.log_level_other)
-            .chain(match fern::log_file(self.log_file.as_ref().unwrap()) {
-                Ok(log) => log,
-                Err(e) => {
-                    return Err(format!("{}", e.to_string()));
-                }
-            });
-        Ok(Some(log))
     }
 
     pub async fn get_ipv4_addresses(&self) -> Vec<Ipv4Addr> {

@@ -50,12 +50,12 @@ async fn main() {
                             .chain(log_stdout)
                             .chain(log_file)
                             .apply()
-                            .unwrap()  // force panic if multiple loggers
+                            .expect("multiple loggers not allowed")
                         ;
                     }
                 }
                 Err(e) => {
-                    log_stdout.apply().unwrap();
+                    log_stdout.apply().expect("multiple loggers not allowed");
                     error!("{e}");
                     return;
                 }
@@ -63,7 +63,7 @@ async fn main() {
             config
         }
         Err(e) => {
-            log_stdout.apply().unwrap();
+            log_stdout.apply().expect("multiple loggers not allowed");
             error!("{e}");
             return;
         }
@@ -99,12 +99,12 @@ async fn main() {
     set.await;
 
     let addresses_current = crate::addresses::Addresses {
-        v4: fut_ipv4.await.unwrap(),
-        v6: fut_ipv6.await.unwrap(),
+        v4: fut_ipv4.await.expect("future-join should not panic"),
+        v6: fut_ipv6.await.expect("future-join should not panic"),
     };
     debug!("Got current: {:?}", addresses_current);
 
-    let addresses_route53 = match fut_r53_addresses.await.unwrap() {
+    let addresses_route53 = match fut_r53_addresses.await.expect("future-join should not panic") {
         Ok(r) => r,
         Err(e) => {
             error!("{}", e);

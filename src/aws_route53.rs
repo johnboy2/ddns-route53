@@ -284,7 +284,7 @@ pub async fn set_host_addresses(
     let start_time = Instant::now();
     let expiry_time = start_time
         .checked_add(config.update_timeout.to_owned())
-        .unwrap();
+        .expect("adding a duration to 'now' should always work");
 
     let cb = match aws_sdk_route53::types::ChangeBatch::builder()
         .set_changes(Some(changes))
@@ -308,14 +308,20 @@ pub async fn set_host_addresses(
     let change_output = match timeout_output {
         Ok(output) => output,
         Err(e) => {
-            let rr = e.raw_response().unwrap();
-            let msg = String::from_utf8_lossy(rr.body().bytes().unwrap());
-            error!("SDK returned error: {}", msg);
+            match e.raw_response() {
+                Some(response) => {
+                    let msg = String::from_utf8_lossy(response.body().bytes().expect("non-streaming error body"));
+                    error!("SDK returned error: {}", msg);
+                },
+                None => {
+                    error!("SDK returned error with empty body");
+                }
+            };
             return Err(format!("change result: {}", e.to_string()));
         }
     };
 
-    let mut ci = change_output.change_info.unwrap();
+    let mut ci = change_output.change_info.expect("Change-responses should include change-info");
     loop {
         if ci.status == aws_sdk_route53::types::ChangeStatus::Insync {
             return Ok(());
@@ -342,6 +348,6 @@ pub async fn set_host_addresses(
             Ok(output) => output,
             Err(e) => return Err(format!("get change error: {}", e.to_string())),
         };
-        ci = output.change_info.unwrap();
+        ci = output.change_info.expect("Change-lookups should return change-info")
     }
 }
