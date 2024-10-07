@@ -65,7 +65,7 @@ struct FileConfig {
     log_level_other: Option<String>,
 }
 
-fn process_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String> {
+fn check_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String> {
     if value < 0.0 {
         return Err(format!("cannot be negative: {}", value));
     } else if let Some(max) = maximum {
@@ -76,7 +76,7 @@ fn process_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String>
     Ok(Duration::from_secs_f64(value))
 }
 
-fn process_bounded_integer(
+fn check_bounded_integer(
     value: i64,
     minimum: Option<i64>,
     maximum: Option<i64>,
@@ -244,7 +244,7 @@ fn build_v4_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V4AlgoResult, S
                 let timeout = match timeout_seconds {
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        process_timeout(*timeout_secs, None)?
+                        check_timeout(*timeout_secs, None)?
                     }
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
@@ -275,7 +275,7 @@ fn build_v4_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V4AlgoResult, S
                 let timeout = match timeout_seconds {
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        process_timeout(*timeout_secs, None)?
+                        check_timeout(*timeout_secs, None)?
                     }
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
@@ -350,7 +350,7 @@ fn build_v6_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V6AlgoResult, S
                 let timeout = match timeout_seconds {
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        process_timeout(*timeout_secs, None)?
+                        check_timeout(*timeout_secs, None)?
                     }
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
@@ -412,15 +412,15 @@ impl Config {
             name_lower_idna
         };
 
-        let poll_interval = process_timeout(
+        let poll_interval = check_timeout(
             config_file.update_poll_seconds,
             Some(MAX_UPDATE_POLL_SECONDS),
         )?;
-        let timeout = process_timeout(
+        let timeout = check_timeout(
             config_file.update_timeout_seconds,
             Some(MAX_UPDATE_TIMEOUT_SECONDS),
         )?;
-        let ttl = process_bounded_integer(
+        let ttl = check_bounded_integer(
             config_file.aws_route53_record_ttl,
             Some(0i64),
             Some(2147483647i64),
