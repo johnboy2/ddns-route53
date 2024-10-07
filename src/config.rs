@@ -15,10 +15,13 @@ use log::{debug, warn, LevelFilter};
 use regex::Regex;
 use serde::Deserialize;
 
-
 static DEFAULT_ALGO_TIMEOUT_SECONDS: f64 = 10.0;
-fn default_update_poll_seconds() -> f64 { return 30.0; }
-fn default_update_timeout_seconds() -> f64 { return 300.0; }
+fn default_update_poll_seconds() -> f64 {
+    return 30.0;
+}
+fn default_update_timeout_seconds() -> f64 {
+    return 300.0;
+}
 static MAX_CONFIG_FILE_SIZE: u64 = 65536;
 static MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
 static MAX_UPDATE_TIMEOUT_SECONDS: f64 = 3600.0;
@@ -30,12 +33,14 @@ enum AlgorithmSpecification {
     DefaultPublicIp,
 
     #[serde(rename = "internet_gateway_protocol")]
-    InternetGatewayProtocol {timeout_seconds: Option::<f64>},
+    InternetGatewayProtocol { timeout_seconds: Option<f64> },
 
     #[serde(rename = "web_service")]
-    WebService {url: String, timeout_seconds: Option::<f64>}
+    WebService {
+        url: String,
+        timeout_seconds: Option<f64>,
+    },
 }
-
 
 #[derive(Deserialize)]
 struct FileConfig {
@@ -47,8 +52,8 @@ struct FileConfig {
     #[serde(default = "default_update_timeout_seconds")]
     update_timeout_seconds: f64,
 
-    ipv4_algorithms: Vec::<AlgorithmSpecification>,
-    ipv6_algorithms: Vec::<AlgorithmSpecification>,
+    ipv4_algorithms: Vec<AlgorithmSpecification>,
+    ipv6_algorithms: Vec<AlgorithmSpecification>,
     aws_profile: Option<String>,
     aws_access_key_id: Option<String>,
     aws_secret_access_key: Option<String>,
@@ -59,7 +64,6 @@ struct FileConfig {
     log_level: Option<String>,
     log_level_other: Option<String>,
 }
-
 
 fn process_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String> {
     if value < 0.0 {
@@ -72,8 +76,11 @@ fn process_timeout(value: f64, maximum: Option<f64>) -> Result<Duration, String>
     Ok(Duration::from_secs_f64(value))
 }
 
-
-fn process_bounded_integer(value: i64, minimum: Option<i64>, maximum: Option<i64>) -> Result<i64, String> {
+fn process_bounded_integer(
+    value: i64,
+    minimum: Option<i64>,
+    maximum: Option<i64>,
+) -> Result<i64, String> {
     loop {
         if minimum.is_some_and(|min| value < min) {
             // Lower than minimum
@@ -87,20 +94,26 @@ fn process_bounded_integer(value: i64, minimum: Option<i64>, maximum: Option<i64
 
         return Ok(value);
     }
-    
-    Err(
-        if minimum.is_some() {
-            if maximum.is_some() {
-                format!("value {} is outside of required range {}-{}", value, minimum.unwrap(), maximum.unwrap())
-            } else {
-                format!("value {} cannot be less than {}", value, minimum.unwrap())
-            }
-        } else {
-            format!("value {} cannot be greater than {}", value, maximum.unwrap())
-        }
-    )
-}
 
+    Err(if minimum.is_some() {
+        if maximum.is_some() {
+            format!(
+                "value {} is outside of required range {}-{}",
+                value,
+                minimum.unwrap(),
+                maximum.unwrap()
+            )
+        } else {
+            format!("value {} cannot be less than {}", value, minimum.unwrap())
+        }
+    } else {
+        format!(
+            "value {} cannot be greater than {}",
+            value,
+            maximum.unwrap()
+        )
+    })
+}
 
 fn validate_host_name(name: &str) -> Result<(), String> {
     let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](\\.[a-zA-Z0-9]|[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$").unwrap();
@@ -111,24 +124,24 @@ fn validate_host_name(name: &str) -> Result<(), String> {
     }
 }
 
-
 fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     let f = match File::open(config_path) {
         Ok(f) => f,
         Err(e) => {
             return Err(format!(
-                "Failed to open file [{config_path}]: {}", e.to_string()
+                "Failed to open file [{config_path}]: {}",
+                e.to_string()
             ));
         }
     };
 
     let mut reader = BufReader::new(f);
-    
+
     let file_size = match reader.seek(std::io::SeekFrom::End(0)) {
         Ok(size) => size,
         Err(e) => {
             return Err(format!(
-                "I/O error with file [{config_path}]: {}", 
+                "I/O error with file [{config_path}]: {}",
                 e.to_string()
             ));
         }
@@ -142,11 +155,12 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     if file_size != 0 {
         reader.seek(std::io::SeekFrom::Start(0)).unwrap();
     }
-    
+
     let mut content = String::new();
     if let Some(error) = reader.read_to_string(&mut content).err() {
         return Err(format!(
-            "Error reading file [{config_path}]: {}", error.to_string()
+            "Error reading file [{config_path}]: {}",
+            error.to_string()
         ));
     }
 
@@ -154,7 +168,8 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
         Ok(value) => value,
         Err(e) => {
             return Err(format!(
-                "Config file [{config_path}] invalid: {}", e.to_string()
+                "Config file [{config_path}] invalid: {}",
+                e.to_string()
             ))
         }
     };
@@ -162,10 +177,10 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     Ok(file_config)
 }
 
-
-type V4AlgoFn = dyn Fn() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv4Addr>, String>> + Send>> + Sync;
-type V6AlgoFn = dyn Fn() -> Pin<Box<dyn Future<Output = Result::<Vec::<Ipv6Addr>, String>> + Send>> + Sync;
-
+type V4AlgoFn =
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<Vec<Ipv4Addr>, String>> + Send>> + Sync;
+type V6AlgoFn =
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<Vec<Ipv6Addr>, String>> + Send>> + Sync;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -175,30 +190,28 @@ pub struct Config {
     pub update_poll_interval: Duration,
     pub update_timeout: Duration,
 
-    #[derivative(Debug="ignore")]
-    ipv4_algo_fns: Vec::<Box<V4AlgoFn>>,
-    ipv4_algorithms: Vec::<String>,
+    #[derivative(Debug = "ignore")]
+    ipv4_algo_fns: Vec<Box<V4AlgoFn>>,
+    ipv4_algorithms: Vec<String>,
 
-    #[derivative(Debug="ignore")]
-    ipv6_algo_fns: Vec::<Box<V6AlgoFn>>,
-    ipv6_algorithms: Vec::<String>,
+    #[derivative(Debug = "ignore")]
+    ipv6_algo_fns: Vec<Box<V6AlgoFn>>,
+    ipv6_algorithms: Vec<String>,
 
     pub route53_client: ::aws_sdk_route53::Client,
-    pub route53_zone_id: Option::<String>,
+    pub route53_zone_id: Option<String>,
     pub route53_record_ttl: i64,
-    log_file: Option::<String>,
+    log_file: Option<String>,
     log_level: LevelFilter,
     log_level_other: LevelFilter,
 }
 
-
 struct V4AlgoResult {
-    descriptions: Vec::<String>,
-    functions: Vec::<Box<V4AlgoFn>>,
+    descriptions: Vec<String>,
+    functions: Vec<Box<V4AlgoFn>>,
 }
 
-
-fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult, String> {
+fn build_v4_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V4AlgoResult, String> {
     let mut have_default = false;
     let mut have_igd = false;
     let mut have_web_service_url = std::collections::HashSet::<&str>::with_capacity(specs.len());
@@ -208,19 +221,23 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
         match spec {
             AlgorithmSpecification::DefaultPublicIp => {
                 if have_default {
-                    return Err("config:ipv4_algorithms can only have up to one default_public_ip".to_owned());
+                    return Err(
+                        "config:ipv4_algorithms can only have up to one default_public_ip"
+                            .to_owned(),
+                    );
                 }
                 have_default = true;
                 descriptions.push(String::from("{type=\"default_public_ip\"}"));
-                functions.push(
-                    Box::new(
-                        || Box::pin(crate::ip_algorithms::get_default_public_ip_v4())
-                    )
-                );
-            },
+                functions.push(Box::new(|| {
+                    Box::pin(crate::ip_algorithms::get_default_public_ip_v4())
+                }));
+            }
             AlgorithmSpecification::InternetGatewayProtocol { timeout_seconds } => {
                 if have_igd {
-                    return Err("config:ipv4_algorithms can only have up to one internet_gateway_protocol".to_owned());
+                    return Err(
+                        "config:ipv4_algorithms can only have up to one internet_gateway_protocol"
+                            .to_owned(),
+                    );
                 }
                 have_igd = true;
                 let mut description = String::from("{type=\"internet_gateway_protocol\"");
@@ -228,20 +245,24 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
                         process_timeout(*timeout_secs, None)?
-                    },
+                    }
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
                 description += "}";
                 descriptions.push(description);
-                functions.push(
-                    Box::new(
-                        move || Box::pin(crate::ip_algorithms::get_igd_ip_v4(timeout))
-                    )
-                );
-            },
-            AlgorithmSpecification::WebService { url, timeout_seconds } => {
+                functions.push(Box::new(move || {
+                    Box::pin(crate::ip_algorithms::get_igd_ip_v4(timeout))
+                }));
+            }
+            AlgorithmSpecification::WebService {
+                url,
+                timeout_seconds,
+            } => {
                 if !have_web_service_url.insert(url.as_str()) {
-                    return Err(format!("config:ipv4_algorithms can only have up to one web_service:[{}]", url));
+                    return Err(format!(
+                        "config:ipv4_algorithms can only have up to one web_service:[{}]",
+                        url
+                    ));
                 }
                 let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed = match reqwest::Url::parse(url) {
@@ -255,33 +276,34 @@ fn build_v4_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V4AlgoResult,
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
                         process_timeout(*timeout_secs, None)?
-                    },
+                    }
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
                 description += "}";
                 descriptions.push(description);
-                functions.push(
-                    Box::new(
-                        move || Box::pin(crate::ip_algorithms::get_web_service_ip_v4(
-                            url_parsed.to_owned(), url_owned.to_owned(), timeout
-                        ))
-                    )
-                )
-            },
+                functions.push(Box::new(move || {
+                    Box::pin(crate::ip_algorithms::get_web_service_ip_v4(
+                        url_parsed.to_owned(),
+                        url_owned.to_owned(),
+                        timeout,
+                    ))
+                }))
+            }
         };
     }
 
-    Ok(V4AlgoResult {descriptions, functions})
+    Ok(V4AlgoResult {
+        descriptions,
+        functions,
+    })
 }
-
 
 struct V6AlgoResult {
-    descriptions: Vec::<String>,
-    functions: Vec::<Box<V6AlgoFn>>,
+    descriptions: Vec<String>,
+    functions: Vec<Box<V6AlgoFn>>,
 }
 
-
-fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult, String> {
+fn build_v6_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V6AlgoResult, String> {
     let mut have_default = false;
     let mut have_web_service_url = std::collections::HashSet::<&str>::with_capacity(specs.len());
     let mut descriptions = Vec::<String>::with_capacity(specs.len());
@@ -290,23 +312,32 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
         match spec {
             AlgorithmSpecification::DefaultPublicIp => {
                 if have_default {
-                    return Err("config:ipv6_algorithms can only have up to one default_public_ip".to_owned());
+                    return Err(
+                        "config:ipv6_algorithms can only have up to one default_public_ip"
+                            .to_owned(),
+                    );
                 }
                 have_default = true;
                 descriptions.push(String::from("{type=\"default_public_ip\"}"));
-                functions.push(
-                    Box::new(
-                        || Box::pin(crate::ip_algorithms::get_default_public_ip_v6())
-                    )
-                );
-            },
+                functions.push(Box::new(|| {
+                    Box::pin(crate::ip_algorithms::get_default_public_ip_v6())
+                }));
+            }
             AlgorithmSpecification::InternetGatewayProtocol { timeout_seconds: _ } => {
                 // TODO: consider making this error the same as any other unknown/invalid "type"
-                return Err("config:ipv6_algorithms cannot have internet_gateway_protocol".to_owned());
-            },
-            AlgorithmSpecification::WebService { url, timeout_seconds } => {
+                return Err(
+                    "config:ipv6_algorithms cannot have internet_gateway_protocol".to_owned(),
+                );
+            }
+            AlgorithmSpecification::WebService {
+                url,
+                timeout_seconds,
+            } => {
                 if !have_web_service_url.insert(url.as_str()) {
-                    return Err(format!("config:ipv6_algorithms can only have up to one web_service:[{}]", url));
+                    return Err(format!(
+                        "config:ipv6_algorithms can only have up to one web_service:[{}]",
+                        url
+                    ));
                 }
                 let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed = match reqwest::Url::parse(url) {
@@ -320,43 +351,42 @@ fn build_v6_algos(specs: &Vec::<AlgorithmSpecification>) -> Result<V6AlgoResult,
                     Some(timeout_secs) => {
                         description += format!(", timeout_seconds={timeout_secs}").as_str();
                         process_timeout(*timeout_secs, None)?
-                    },
+                    }
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
                 description += "}";
                 descriptions.push(description);
-                functions.push(
-                    Box::new(
-                        move || Box::pin(crate::ip_algorithms::get_web_service_ip_v6(
-                            url_parsed.to_owned(), url_owned.to_owned(), timeout
-                        ))
-                    )
-                )
-            },
+                functions.push(Box::new(move || {
+                    Box::pin(crate::ip_algorithms::get_web_service_ip_v6(
+                        url_parsed.to_owned(),
+                        url_owned.to_owned(),
+                        timeout,
+                    ))
+                }))
+            }
         };
     }
 
-    Ok(V6AlgoResult {descriptions, functions})
+    Ok(V6AlgoResult {
+        descriptions,
+        functions,
+    })
 }
-
 
 fn parse_log_level(name: &Option<String>, default: LevelFilter) -> Result<LevelFilter, String> {
     match name {
-        Some(name) => {
-            match name.as_str() {
-                "off" => Ok(LevelFilter::Off),
-                "error" => Ok(LevelFilter::Error),
-                "warn" => Ok(LevelFilter::Warn),
-                "info" => Ok(LevelFilter::Info),
-                "debug" => Ok(LevelFilter::Debug),
-                "trace" => Ok(LevelFilter::Trace),
-                _ => Err(format!("Unknown log-level: \"{}\"", name.as_str()))
-            }
+        Some(name) => match name.as_str() {
+            "off" => Ok(LevelFilter::Off),
+            "error" => Ok(LevelFilter::Error),
+            "warn" => Ok(LevelFilter::Warn),
+            "info" => Ok(LevelFilter::Info),
+            "debug" => Ok(LevelFilter::Debug),
+            "trace" => Ok(LevelFilter::Trace),
+            _ => Err(format!("Unknown log-level: \"{}\"", name.as_str())),
         },
-        None => Ok(default)
+        None => Ok(default),
     }
 }
-
 
 impl Config {
     pub async fn load(config_path: &String) -> Result<Self, String> {
@@ -364,15 +394,17 @@ impl Config {
 
         let host_name_normalized = {
             let name_lower = config_file.host_name.to_lowercase();
-            let mut name_lower_idna = match
-                idna::domain_to_ascii_cow(
-                    name_lower.as_bytes(), idna::AsciiDenyList::URL
-                )
-                {
+            let mut name_lower_idna =
+                match idna::domain_to_ascii_cow(name_lower.as_bytes(), idna::AsciiDenyList::URL) {
                     Ok(r) => r,
-                    Err(e) => { return Err(format!("Failed to convert hostname to IDNA: {}", e.to_string())); }
-                }.into_owned()
-            ;
+                    Err(e) => {
+                        return Err(format!(
+                            "Failed to convert hostname to IDNA: {}",
+                            e.to_string()
+                        ));
+                    }
+                }
+                .into_owned();
             validate_host_name(name_lower_idna.as_str())?;
             if !name_lower_idna.ends_with(".") {
                 name_lower_idna += ".";
@@ -381,14 +413,18 @@ impl Config {
         };
 
         let poll_interval = process_timeout(
-            config_file.update_poll_seconds, 
-            Some(MAX_UPDATE_POLL_SECONDS)
+            config_file.update_poll_seconds,
+            Some(MAX_UPDATE_POLL_SECONDS),
         )?;
         let timeout = process_timeout(
-            config_file.update_timeout_seconds, 
-            Some(MAX_UPDATE_TIMEOUT_SECONDS)
+            config_file.update_timeout_seconds,
+            Some(MAX_UPDATE_TIMEOUT_SECONDS),
         )?;
-        let ttl = process_bounded_integer(config_file.aws_route53_record_ttl, Some(0i64), Some(2147483647i64))?;
+        let ttl = process_bounded_integer(
+            config_file.aws_route53_record_ttl,
+            Some(0i64),
+            Some(2147483647i64),
+        )?;
         let v4_algos = build_v4_algos(&config_file.ipv4_algorithms)?;
         let v6_algos = build_v6_algos(&config_file.ipv6_algorithms)?;
 
@@ -396,9 +432,10 @@ impl Config {
             &config_file.aws_profile,
             &config_file.aws_access_key_id,
             &config_file.aws_secret_access_key,
-            &config_file.aws_region
-        ).await;
-   
+            &config_file.aws_region,
+        )
+        .await;
+
         Ok(Self {
             host_name: config_file.host_name,
             host_name_normalized,
@@ -417,7 +454,7 @@ impl Config {
         })
     }
 
-    pub fn get_file_logger(&self) -> Result::<Option<fern::Dispatch>, String> {
+    pub fn get_file_logger(&self) -> Result<Option<fern::Dispatch>, String> {
         if self.log_file.is_none() {
             return Ok(None);
         }
@@ -433,17 +470,16 @@ impl Config {
             })
             .level_for(env!("CARGO_CRATE_NAME"), self.log_level)
             .level(self.log_level_other)
-            .chain(
-                match fern::log_file(self.log_file.as_ref().unwrap()) {
-                    Ok(log) => log,
-                    Err(e) => { return Err(format!("{}", e.to_string())); }
+            .chain(match fern::log_file(self.log_file.as_ref().unwrap()) {
+                Ok(log) => log,
+                Err(e) => {
+                    return Err(format!("{}", e.to_string()));
                 }
-            )
-        ;
+            });
         Ok(Some(log))
     }
 
-    pub async fn get_ipv4_addresses(&self) -> Vec::<Ipv4Addr> {
+    pub async fn get_ipv4_addresses(&self) -> Vec<Ipv4Addr> {
         for (name, algo_fn) in self.ipv4_algorithms.iter().zip(self.ipv4_algo_fns.iter()) {
             debug!("ipv4: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
@@ -456,7 +492,7 @@ impl Config {
                         debug!("ipv4: return {} found address(es)", ips.len());
                         return ips;
                     }
-                },
+                }
                 Err(msg) => {
                     warn!("ipv4: algorithm {} returned error: {}", name, msg);
                 }
@@ -467,7 +503,7 @@ impl Config {
         Vec::<Ipv4Addr>::new()
     }
 
-    pub async fn get_ipv6_addresses(&self) -> Vec::<Ipv6Addr> {
+    pub async fn get_ipv6_addresses(&self) -> Vec<Ipv6Addr> {
         for (name, algo_fn) in self.ipv6_algorithms.iter().zip(self.ipv6_algo_fns.iter()) {
             debug!("ipv6: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
@@ -480,7 +516,7 @@ impl Config {
                         debug!("ipv6: return {} found address(es)", ips.len());
                         return ips;
                     }
-                },
+                }
                 Err(msg) => {
                     warn!("ipv6: algorithm {} returned error: {}", name, msg);
                 }
@@ -491,4 +527,3 @@ impl Config {
         Vec::<Ipv6Addr>::new()
     }
 }
- 

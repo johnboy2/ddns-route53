@@ -2,7 +2,6 @@ use clap::Parser;
 
 static DEFAULT_CONFIG_FILE: &'static str = "ddns-route53.conf";
 
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
@@ -22,7 +21,6 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub log_other: u8,
 }
-
 
 pub fn parse_cli_args() -> Args {
     Args::parse()

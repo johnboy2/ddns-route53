@@ -8,22 +8,16 @@ use std::vec::Vec;
 use log::debug;
 use netdev::Interface;
 
+static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
+    LazyLock::new(|| netdev::get_default_interface());
 
-static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> = LazyLock::new(||
-    netdev::get_default_interface()
-);
-
-
-static WEB_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    match reqwest::ClientBuilder::new().build() {
+static WEB_CLIENT: LazyLock<Result<reqwest::Client, String>> =
+    LazyLock::new(|| match reqwest::ClientBuilder::new().build() {
         Ok(client) => Ok(client),
-        Err(e) => Err(e.to_string())
-    }
-});
-
+        Err(e) => Err(e.to_string()),
+    });
 
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
-
 
 // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
 fn ipv4_is_global(ip: &Ipv4Addr) -> bool {
@@ -52,7 +46,6 @@ fn ipv4_is_global(ip: &Ipv4Addr) -> bool {
     )
     || ip.is_broadcast())
 }
-
 
 // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
 fn ipv6_is_global(ip: &Ipv6Addr) -> bool {
@@ -96,16 +89,14 @@ fn ipv6_is_global(ip: &Ipv6Addr) -> bool {
     ))
 }
 
-
 // Helper to download a document from a URL
 async fn get_web_service_document(
-    client: &reqwest::Client, url: reqwest::Url, url_string: &String, timeout: Duration
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    url_string: &String,
+    timeout: Duration,
 ) -> Result<String, String> {
-    let request =
-        client.get(url)
-        .timeout(timeout)
-        .send()
-    ;
+    let request = client.get(url).timeout(timeout).send();
 
     let response = match request.await {
         Ok(r) => r,
@@ -142,11 +133,10 @@ async fn get_web_service_document(
     Ok(body)
 }
 
-
-pub async fn get_default_public_ip_v4() -> Result::<Vec::<Ipv4Addr>, String> {
+pub async fn get_default_public_ip_v4() -> Result<Vec<Ipv4Addr>, String> {
     let default_interface = match &*DEFAULT_INTERFACE {
         Ok(interface) => interface,
-        Err(e) => { return Err(e.to_owned()) }
+        Err(e) => return Err(e.to_owned()),
     };
 
     let mut result = std::vec::Vec::<Ipv4Addr>::new();
@@ -165,8 +155,7 @@ pub async fn get_default_public_ip_v4() -> Result::<Vec::<Ipv4Addr>, String> {
     Ok(result)
 }
 
-
-pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec::<Ipv4Addr>, String> {
+pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
     // This algorithm blocks, so we spin it off into its own thread.
     let thread_result: Result<Result<Vec<Ipv4Addr>, String>, tokio::task::JoinError> = tokio::task::spawn_blocking(move || {
         let search_option = igd_next::SearchOptions {
@@ -191,7 +180,7 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec::<Ipv4Addr>, String>
                         debug!(
                             "Ignoring address [{}] reported by internet gateway: address is non-global",
                             v4
-                        );            
+                        );
                     }
                 }
                 return Ok(Vec::<Ipv4Addr>::new());
@@ -215,8 +204,11 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec::<Ipv4Addr>, String>
     }
 }
 
-
-pub async fn get_web_service_ip_v4(url: reqwest::Url, url_string: String, timeout: Duration) -> Result::<Vec::<Ipv4Addr>, String> {
+pub async fn get_web_service_ip_v4(
+    url: reqwest::Url,
+    url_string: String,
+    timeout: Duration,
+) -> Result<Vec<Ipv4Addr>, String> {
     let client = (&*WEB_CLIENT).as_ref()?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
@@ -233,11 +225,12 @@ pub async fn get_web_service_ip_v4(url: reqwest::Url, url_string: String, timeou
                         ip, url_string
                     );
                 }
-            },
+            }
             Err(e) => {
                 return Err(format!(
                     "Failed to parse result as IPv4 address: \"{}\": {}",
-                    line, e.to_string().as_str()
+                    line,
+                    e.to_string().as_str()
                 ))
             }
         }
@@ -246,11 +239,10 @@ pub async fn get_web_service_ip_v4(url: reqwest::Url, url_string: String, timeou
     Ok(result)
 }
 
-
-pub async fn get_default_public_ip_v6() -> Result::<Vec::<Ipv6Addr>, String> {
+pub async fn get_default_public_ip_v6() -> Result<Vec<Ipv6Addr>, String> {
     let default_interface = match &*DEFAULT_INTERFACE {
         Ok(interface) => interface,
-        Err(e) => { return Err(e.to_owned()) }
+        Err(e) => return Err(e.to_owned()),
     };
 
     let mut result = std::vec::Vec::<Ipv6Addr>::new();
@@ -269,8 +261,11 @@ pub async fn get_default_public_ip_v6() -> Result::<Vec::<Ipv6Addr>, String> {
     Ok(result)
 }
 
-
-pub async fn get_web_service_ip_v6(url: reqwest::Url, url_string: String, timeout: Duration) -> Result::<Vec::<Ipv6Addr>, String> {
+pub async fn get_web_service_ip_v6(
+    url: reqwest::Url,
+    url_string: String,
+    timeout: Duration,
+) -> Result<Vec<Ipv6Addr>, String> {
     let client = (&*WEB_CLIENT).as_ref()?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
@@ -278,7 +273,7 @@ pub async fn get_web_service_ip_v6(url: reqwest::Url, url_string: String, timeou
     let mut result = Vec::<Ipv6Addr>::new();
     for line in body.as_str().lines() {
         match Ipv6Addr::from_str(line) {
-            Ok(ip) => { 
+            Ok(ip) => {
                 if ipv6_is_global(&ip) {
                     result.push(ip)
                 } else {
@@ -287,11 +282,12 @@ pub async fn get_web_service_ip_v6(url: reqwest::Url, url_string: String, timeou
                         ip, url_string
                     );
                 }
-            },
+            }
             Err(e) => {
                 return Err(format!(
                     "Failed to parse result as IPv6 address: \"{}\": {}",
-                    line, e.to_string().as_str()
+                    line,
+                    e.to_string().as_str()
                 ))
             }
         }
