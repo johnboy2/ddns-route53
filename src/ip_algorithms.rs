@@ -100,11 +100,7 @@ async fn get_web_service_document(
 
     let response = match request.await {
         Ok(r) => r,
-        Err(e) => {
-            return Err(format!(
-                "Failed to fetch from URL \"{url_string}\": {e}"
-            ))
-        }
+        Err(e) => return Err(format!("Failed to fetch from URL \"{url_string}\": {e}")),
     };
 
     if let Some(cl) = response.content_length() {
@@ -191,11 +187,9 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
 
     match thread_result {
         Ok(result) => result,
-        Err(e) => {
-            Err(format!(
-                "Error joining thread searching for internet gateway device: {e}"
-            ))
-        }
+        Err(e) => Err(format!(
+            "Error joining thread searching for internet gateway device: {e}"
+        )),
     }
 }
 

@@ -115,9 +115,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     let f = match File::open(config_path) {
         Ok(f) => f,
         Err(e) => {
-            return Err(format!(
-                "Failed to open file [{config_path}]: {e}"
-            ));
+            return Err(format!("Failed to open file [{config_path}]: {e}"));
         }
     };
 
@@ -126,9 +124,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     let file_size = match reader.seek(std::io::SeekFrom::End(0)) {
         Ok(size) => size,
         Err(e) => {
-            return Err(format!(
-                "I/O error with file [{config_path}]: {e}",
-            ));
+            return Err(format!("I/O error with file [{config_path}]: {e}",));
         }
     };
     if MAX_CONFIG_FILE_SIZE < file_size {
@@ -138,23 +134,19 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
         ));
     }
     if file_size != 0 {
-        reader.seek(std::io::SeekFrom::Start(0)).expect("seek to start should always work");
+        reader
+            .seek(std::io::SeekFrom::Start(0))
+            .expect("seek to start should always work");
     }
 
     let mut content = String::new();
     if let Some(error) = reader.read_to_string(&mut content).err() {
-        return Err(format!(
-            "Error reading file [{config_path}]: {error}"
-        ));
+        return Err(format!("Error reading file [{config_path}]: {error}"));
     }
 
     let file_config: FileConfig = match toml::from_str(content.as_str()) {
         Ok(value) => value,
-        Err(e) => {
-            return Err(format!(
-                "Config file [{config_path}] invalid: {e}"
-            ))
-        }
+        Err(e) => return Err(format!("Config file [{config_path}] invalid: {e}")),
     };
 
     Ok(file_config)
@@ -250,9 +242,7 @@ fn build_v4_algos(specs: &[AlgorithmSpecification]) -> Result<V4AlgoResult, Stri
                 let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed = match reqwest::Url::parse(url) {
                     Ok(parsed) => parsed,
-                    Err(e) => {
-                        return Err(format!("Failed to parse URL [{url}]: {e}"))
-                    }
+                    Err(e) => return Err(format!("Failed to parse URL [{url}]: {e}")),
                 };
                 let url_owned = url.to_owned();
                 let timeout = match timeout_seconds {
@@ -325,9 +315,7 @@ fn build_v6_algos(specs: &[AlgorithmSpecification]) -> Result<V6AlgoResult, Stri
                 let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed = match reqwest::Url::parse(url) {
                     Ok(parsed) => parsed,
-                    Err(e) => {
-                        return Err(format!("Failed to parse URL [{url}]: {e}"))
-                    }
+                    Err(e) => return Err(format!("Failed to parse URL [{url}]: {e}")),
                 };
                 let url_owned = url.to_owned();
                 let timeout = match timeout_seconds {
@@ -381,9 +369,7 @@ impl Config {
                 match idna::domain_to_ascii_cow(name_lower.as_bytes(), idna::AsciiDenyList::URL) {
                     Ok(r) => r,
                     Err(e) => {
-                        return Err(format!(
-                            "Failed to convert hostname to IDNA: {e}"
-                        ));
+                        return Err(format!("Failed to convert hostname to IDNA: {e}"));
                     }
                 }
                 .into_owned();

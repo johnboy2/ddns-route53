@@ -50,8 +50,7 @@ async fn main() {
                             .chain(log_stdout)
                             .chain(log_file)
                             .apply()
-                            .expect("multiple loggers not allowed")
-                        ;
+                            .expect("multiple loggers not allowed");
                     }
                 }
                 Err(e) => {
@@ -104,7 +103,10 @@ async fn main() {
     };
     debug!("Got current: {:?}", addresses_current);
 
-    let addresses_route53 = match fut_r53_addresses.await.expect("future-join should not panic") {
+    let addresses_route53 = match fut_r53_addresses
+        .await
+        .expect("future-join should not panic")
+    {
         Ok(r) => r,
         Err(e) => {
             error!("{}", e);

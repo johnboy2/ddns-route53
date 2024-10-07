@@ -29,8 +29,7 @@ pub async fn get_client(
 
     if let Some(access_key) = aws_access_key_id {
         if let Some(secret_access_key) = aws_secret_access_key {
-            let creds =
-                Credentials::new(access_key, secret_access_key, None, None, "configfile");
+            let creds = Credentials::new(access_key, secret_access_key, None, None, "configfile");
             config_builder = config_builder.credentials_provider(creds);
         }
     }
@@ -302,9 +301,11 @@ pub async fn set_host_addresses(
         Err(e) => {
             match e.raw_response() {
                 Some(response) => {
-                    let msg = String::from_utf8_lossy(response.body().bytes().expect("non-streaming error body"));
+                    let msg = String::from_utf8_lossy(
+                        response.body().bytes().expect("non-streaming error body"),
+                    );
                     error!("SDK returned error: {}", msg);
-                },
+                }
                 None => {
                     error!("SDK returned error with empty body");
                 }
@@ -313,7 +314,9 @@ pub async fn set_host_addresses(
         }
     };
 
-    let mut ci = change_output.change_info.expect("Change-responses should include change-info");
+    let mut ci = change_output
+        .change_info
+        .expect("Change-responses should include change-info");
     loop {
         if ci.status == aws_sdk_route53::types::ChangeStatus::Insync {
             return Ok(());
@@ -340,6 +343,8 @@ pub async fn set_host_addresses(
             Ok(output) => output,
             Err(e) => return Err(format!("get change error: {e}")),
         };
-        ci = output.change_info.expect("Change-lookups should return change-info")
+        ci = output
+            .change_info
+            .expect("Change-lookups should return change-info")
     }
 }
