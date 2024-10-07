@@ -17,10 +17,10 @@ use serde::Deserialize;
 
 static DEFAULT_ALGO_TIMEOUT_SECONDS: f64 = 10.0;
 fn default_update_poll_seconds() -> f64 {
-    return 30.0;
+    30.0
 }
 fn default_update_timeout_seconds() -> f64 {
-    return 300.0;
+    300.0
 }
 static MAX_CONFIG_FILE_SIZE: u64 = 65536;
 static MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
@@ -81,35 +81,23 @@ fn check_bounded_integer(
     minimum: Option<i64>,
     maximum: Option<i64>,
 ) -> Result<i64, String> {
-    loop {
-        if minimum.is_some_and(|min| value < min) {
-            // Lower than minimum
-            break;
+    if let Some(min) = minimum {
+        if let Some(max) = maximum {
+            if value < min || max < value {
+                return Err(format!(
+                    "value {value} is outside of required range {min}-{max}"
+                ));
+            }
+        } else if value < min {
+            return Err(format!("value {value} cannot be less than {min}"));
         }
-
-        if maximum.is_some_and(|max| max < value) {
-            // Larger than maximum
-            break;
+    } else if let Some(max) = maximum {
+        if max < value {
+            return Err(format!("value {value} cannot be greater than {max}"));
         }
-
-        return Ok(value);
     }
 
-    Err(
-        if let Some(min) = minimum {
-            if let Some(max) = maximum {
-                format!(
-                    "value {value} is outside of required range {min}-{max}"
-                )
-            } else {
-                format!("value {value} cannot be less than {min}")
-            }
-        } else if let Some(max) = maximum {
-            format!("value {value} cannot be greater than {max}")    
-        } else {
-            panic!("Reached impossible state")
-        }
-    )
+    Ok(value)
 }
 
 fn validate_host_name(name: &str) -> Result<(), String> {
@@ -117,9 +105,9 @@ fn validate_host_name(name: &str) -> Result<(), String> {
         .expect("hard-coded regex should always be valid")
     ;
     if ptn.is_match(name) {
-        return Ok(());
+        Ok(())
     } else {
-        return Err("Invalid host name".to_owned());
+        Err("Invalid host name".to_owned())
     }
 }
 
@@ -128,8 +116,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
         Ok(f) => f,
         Err(e) => {
             return Err(format!(
-                "Failed to open file [{config_path}]: {}",
-                e.to_string()
+                "Failed to open file [{config_path}]: {e}"
             ));
         }
     };
@@ -140,8 +127,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
         Ok(size) => size,
         Err(e) => {
             return Err(format!(
-                "I/O error with file [{config_path}]: {}",
-                e.to_string()
+                "I/O error with file [{config_path}]: {e}",
             ));
         }
     };
@@ -158,8 +144,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     let mut content = String::new();
     if let Some(error) = reader.read_to_string(&mut content).err() {
         return Err(format!(
-            "Error reading file [{config_path}]: {}",
-            error.to_string()
+            "Error reading file [{config_path}]: {error}"
         ));
     }
 
@@ -167,8 +152,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
         Ok(value) => value,
         Err(e) => {
             return Err(format!(
-                "Config file [{config_path}] invalid: {}",
-                e.to_string()
+                "Config file [{config_path}] invalid: {e}"
             ))
         }
     };
@@ -210,7 +194,7 @@ struct V4AlgoResult {
     functions: Vec<Box<V4AlgoFn>>,
 }
 
-fn build_v4_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V4AlgoResult, String> {
+fn build_v4_algos(specs: &[AlgorithmSpecification]) -> Result<V4AlgoResult, String> {
     let mut have_default = false;
     let mut have_igd = false;
     let mut have_web_service_url = std::collections::HashSet::<&str>::with_capacity(specs.len());
@@ -267,7 +251,7 @@ fn build_v4_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V4AlgoResult, S
                 let url_parsed = match reqwest::Url::parse(url) {
                     Ok(parsed) => parsed,
                     Err(e) => {
-                        return Err(format!("Failed to parse URL [{}]: {}", url, e.to_string()))
+                        return Err(format!("Failed to parse URL [{url}]: {e}"))
                     }
                 };
                 let url_owned = url.to_owned();
@@ -302,7 +286,7 @@ struct V6AlgoResult {
     functions: Vec<Box<V6AlgoFn>>,
 }
 
-fn build_v6_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V6AlgoResult, String> {
+fn build_v6_algos(specs: &[AlgorithmSpecification]) -> Result<V6AlgoResult, String> {
     let mut have_default = false;
     let mut have_web_service_url = std::collections::HashSet::<&str>::with_capacity(specs.len());
     let mut descriptions = Vec::<String>::with_capacity(specs.len());
@@ -342,7 +326,7 @@ fn build_v6_algos(specs: &Vec<AlgorithmSpecification>) -> Result<V6AlgoResult, S
                 let url_parsed = match reqwest::Url::parse(url) {
                     Ok(parsed) => parsed,
                     Err(e) => {
-                        return Err(format!("Failed to parse URL [{}]: {}", url, e.to_string()))
+                        return Err(format!("Failed to parse URL [{url}]: {e}"))
                     }
                 };
                 let url_owned = url.to_owned();
@@ -398,8 +382,7 @@ impl Config {
                     Ok(r) => r,
                     Err(e) => {
                         return Err(format!(
-                            "Failed to convert hostname to IDNA: {}",
-                            e.to_string()
+                            "Failed to convert hostname to IDNA: {e}"
                         ));
                     }
                 }
@@ -470,12 +453,12 @@ impl Config {
                 .chain(match fern::log_file(log_file) {
                     Ok(log) => log,
                     Err(e) => {
-                        return Err(format!("{}", e.to_string()));
+                        return Err(format!("{e}"));
                     }
                 });
             Ok(Some(log))
         } else {
-            return Ok(None);
+            Ok(None)
         }
     }
 

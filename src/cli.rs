@@ -1,6 +1,6 @@
 use clap::Parser;
 
-static DEFAULT_CONFIG_FILE: &'static str = "ddns-route53.conf";
+static DEFAULT_CONFIG_FILE: &str = "ddns-route53.conf";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

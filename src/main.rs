@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::rc::Rc;
 use std::time::SystemTime;
 
 use log::{debug, error, info, trace, warn};
@@ -70,7 +70,7 @@ async fn main() {
     };
 
     trace!("{:?}", config);
-    let arc_config = Arc::new(config);
+    let arc_config = Rc::new(config);
 
     let set = tokio::task::LocalSet::new();
 
@@ -108,7 +108,7 @@ async fn main() {
         Ok(r) => r,
         Err(e) => {
             error!("{}", e);
-            return ();
+            return;
         }
     };
     debug!("Got route53: {:?}", addresses_route53);
@@ -123,7 +123,7 @@ async fn main() {
 
     debug!("Address mismatch: attempting route53 update...");
     match crate::aws_route53::set_host_addresses(
-        &*arc_config,
+        &arc_config,
         &addresses_current,
         &addresses_route53,
     )

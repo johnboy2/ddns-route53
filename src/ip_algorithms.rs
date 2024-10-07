@@ -9,7 +9,7 @@ use log::debug;
 use netdev::Interface;
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
-    LazyLock::new(|| netdev::get_default_interface());
+    LazyLock::new(netdev::get_default_interface);
 
 static WEB_CLIENT: LazyLock<Result<reqwest::Client, String>> =
     LazyLock::new(|| match reqwest::ClientBuilder::new().build() {
@@ -70,7 +70,7 @@ fn ipv6_is_global(ip: &Ipv6Addr) -> bool {
             || matches!(ip.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
             // ORCHIDv2 (`2001:20::/28`)
             // Drone Remote ID Protocol Entity Tags (DETs) Prefix (`2001:30::/28`)`
-            || matches!(ip.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
+            || matches!(ip.segments(), [0x2001, b, _, _, _, _, _, _] if (0x20..=0x3F).contains(&b))
         ))
     // 6to4 (`2002::/16`) – it's not explicitly documented as globally reachable,
     // IANA says N/A.
@@ -102,9 +102,7 @@ async fn get_web_service_document(
         Ok(r) => r,
         Err(e) => {
             return Err(format!(
-                "Failed to fetch from URL \"{}\": {}",
-                url_string,
-                e.to_string()
+                "Failed to fetch from URL \"{url_string}\": {e}"
             ))
         }
     };
@@ -124,9 +122,7 @@ async fn get_web_service_document(
         Ok(b) => b,
         Err(e) => {
             return Err(format!(
-                "Failed to read result body from URL \"{}\": {}",
-                url_string,
-                e.to_string()
+                "Failed to read result body from URL \"{url_string}\": {e}"
             ))
         }
     };
@@ -166,7 +162,7 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
             Ok(gw) => gw,
             Err(e) => {
                 return Err(
-                    format!("Failed to find internet gateway: {}", e.to_string())
+                    format!("Failed to find internet gateway: {e}")
                 );
             }
         };
@@ -183,12 +179,12 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
                         );
                     }
                 }
-                return Ok(Vec::<Ipv4Addr>::new());
+                Ok(Vec::<Ipv4Addr>::new())
             },
             Err(e) => {
-                return Err(
-                    format!("Failed to determine internet gateway external IP address: {}", e.to_string())
-                );
+                Err(
+                    format!("Failed to determine internet gateway external IP address: {e}")
+                )
             }
         }
     }).await;
@@ -196,9 +192,8 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
     match thread_result {
         Ok(result) => result,
         Err(e) => {
-            return Err(format!(
-                "Error joining thread searching for internet gateway device: {}",
-                e.to_string()
+            Err(format!(
+                "Error joining thread searching for internet gateway device: {e}"
             ))
         }
     }
@@ -209,7 +204,7 @@ pub async fn get_web_service_ip_v4(
     url_string: String,
     timeout: Duration,
 ) -> Result<Vec<Ipv4Addr>, String> {
-    let client = (&*WEB_CLIENT).as_ref()?;
+    let client = (*WEB_CLIENT).as_ref()?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
 
@@ -266,7 +261,7 @@ pub async fn get_web_service_ip_v6(
     url_string: String,
     timeout: Duration,
 ) -> Result<Vec<Ipv6Addr>, String> {
-    let client = (&*WEB_CLIENT).as_ref()?;
+    let client = (*WEB_CLIENT).as_ref()?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
 

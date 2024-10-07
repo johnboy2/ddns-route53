@@ -27,31 +27,23 @@ pub async fn get_client(
         config_builder.set_region(Some(region));
     }
 
-    loop {
-        if let Some(access_key) = aws_access_key_id {
-            if let Some(secret_access_key) = aws_secret_access_key {
-                let creds =
-                    Credentials::new(access_key, secret_access_key, None, None, "configfile");
-                config_builder = config_builder.credentials_provider(creds);
-                break;
-            }
+    if let Some(access_key) = aws_access_key_id {
+        if let Some(secret_access_key) = aws_secret_access_key {
+            let creds =
+                Credentials::new(access_key, secret_access_key, None, None, "configfile");
+            config_builder = config_builder.credentials_provider(creds);
         }
+    }
 
-        if let Some(profile) = aws_profile {
-            let profile = ProfileFileCredentialsProvider::builder()
-                .profile_name(profile)
-                .build();
-            config_builder = config_builder.credentials_provider(profile);
-            break;
-        }
-
-        break;
+    if let Some(profile) = aws_profile {
+        let profile = ProfileFileCredentialsProvider::builder()
+            .profile_name(profile)
+            .build();
+        config_builder = config_builder.credentials_provider(profile);
     }
 
     let config = config_builder.build();
-    let client = Client::from_conf(config);
-
-    client
+    Client::from_conf(config)
 }
 
 fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
@@ -75,13 +67,13 @@ fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
     false
 }
 
-pub async fn get_zone_id(client: &Client, host_name: &String) -> Result<String, String> {
+pub async fn get_zone_id(client: &Client, host_name: &str) -> Result<String, String> {
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
         match page {
             Ok(result) => {
                 for zone in result.hosted_zones.iter() {
-                    if host_is_in_domain(host_name.as_str(), zone.name()) {
+                    if host_is_in_domain(host_name, zone.name()) {
                         return Ok(zone.id.to_owned());
                     }
                 }
@@ -131,7 +123,7 @@ where
                                         "Got bad '{}' record value back from route53: \"{}\": {}",
                                         rrtype.as_str(),
                                         value_struct.value,
-                                        e.to_string()
+                                        e
                                     ))
                                 }
                             }
@@ -154,7 +146,7 @@ pub async fn get_host_addresses(
 ) -> Result<Addresses, String> {
     let zone_id = match route53_zone_id {
         Some(value) => value.to_owned(),
-        None => get_zone_id(client, host_name).await?,
+        None => get_zone_id(client, host_name.as_str()).await?,
     };
 
     let fut_ipv4 =
@@ -189,7 +181,7 @@ impl IpAny for Ipv6Addr {}
 fn _build_r53_change_set(
     host_name: String,
     ttl: i64,
-    addresses: &Vec<impl IpAny + Sized>,
+    addresses: &[impl IpAny + Sized],
     rr_type: aws_sdk_route53::types::RrType,
     action: aws_sdk_route53::types::ChangeAction,
 ) -> Result<aws_sdk_route53::types::Change, String> {
@@ -200,7 +192,7 @@ fn _build_r53_change_set(
             .build()
         {
             Ok(r) => r,
-            Err(e) => return Err(format!("convert ip to RR: {}", e.to_string())),
+            Err(e) => return Err(format!("convert ip to RR: {e}")),
         };
         rr_vec.push(rr);
     }
@@ -213,7 +205,7 @@ fn _build_r53_change_set(
         .build()
     {
         Ok(rrs) => rrs,
-        Err(e) => return Err(format!("building rrs: {}", e.to_string())),
+        Err(e) => return Err(format!("building rrs: {e}")),
     };
     let chg = match aws_sdk_route53::types::Change::builder()
         .set_action(Some(action))
@@ -221,7 +213,7 @@ fn _build_r53_change_set(
         .build()
     {
         Ok(chg) => chg,
-        Err(e) => return Err(format!("building change set: {}", e.to_string())),
+        Err(e) => return Err(format!("building change set: {e}")),
     };
 
     Ok(chg)
@@ -291,7 +283,7 @@ pub async fn set_host_addresses(
         .build()
     {
         Ok(cb) => cb,
-        Err(e) => return Err(format!("building change batch: {}", e.to_string())),
+        Err(e) => return Err(format!("building change batch: {e}")),
     };
     let change_fut = config
         .route53_client
@@ -317,7 +309,7 @@ pub async fn set_host_addresses(
                     error!("SDK returned error with empty body");
                 }
             };
-            return Err(format!("change result: {}", e.to_string()));
+            return Err(format!("change result: {e}"));
         }
     };
 
@@ -346,7 +338,7 @@ pub async fn set_host_addresses(
             .await
         {
             Ok(output) => output,
-            Err(e) => return Err(format!("get change error: {}", e.to_string())),
+            Err(e) => return Err(format!("get change error: {e}")),
         };
         ci = output.change_info.expect("Change-lookups should return change-info")
     }
