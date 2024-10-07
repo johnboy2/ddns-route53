@@ -95,24 +95,21 @@ fn check_bounded_integer(
         return Ok(value);
     }
 
-    Err(if minimum.is_some() {
-        if maximum.is_some() {
-            format!(
-                "value {} is outside of required range {}-{}",
-                value,
-                minimum.unwrap(),
-                maximum.unwrap()
-            )
+    Err(
+        if let Some(min) = minimum {
+            if let Some(max) = maximum {
+                format!(
+                    "value {value} is outside of required range {min}-{max}"
+                )
+            } else {
+                format!("value {value} cannot be less than {min}")
+            }
+        } else if let Some(max) = maximum {
+            format!("value {value} cannot be greater than {max}")    
         } else {
-            format!("value {} cannot be less than {}", value, minimum.unwrap())
+            panic!("Reached impossible state")
         }
-    } else {
-        format!(
-            "value {} cannot be greater than {}",
-            value,
-            maximum.unwrap()
-        )
-    })
+    )
 }
 
 fn validate_host_name(name: &str) -> Result<(), String> {
