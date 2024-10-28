@@ -9,7 +9,6 @@ use std::pin::Pin;
 use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
-use idna::{AsciiDenyList, domain_to_ascii_cow};
 use derivative::Derivative;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
 use log::{debug, warn, LevelFilter};

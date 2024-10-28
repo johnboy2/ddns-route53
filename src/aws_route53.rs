@@ -1,16 +1,19 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::cmp::{min, Ord};
+use std::fmt::{Debug, Display};
+use std::str::FromStr;
 use std::time::Instant;
 
 use aws_config::profile::ProfileFileCredentialsProvider;
 use aws_sdk_route53::config::Credentials;
-use aws_sdk_route53::types::{ResourceRecord, RrType};
+use aws_sdk_route53::types::{
+    Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet, RrType,
+};
 use aws_sdk_route53::Client;
 use aws_types::region::Region;
-use futures::join;
 use log::{debug, error};
 use tokio::time::{sleep, timeout};
 
-use crate::addresses::Addresses;
+use crate::addresses::{AddressRecords, Addresses};
 use crate::config::Config;
 
 pub async fn get_client(
@@ -84,203 +87,216 @@ pub async fn get_zone_id(client: &Client, host_name: &str) -> Result<String, Str
     Err("not found".to_owned())
 }
 
-pub async fn get_host_addresses_for_single_rr_type<IPTYPE>(
+pub async fn get_resource_records(
     client: &Client,
     host_name: &String,
-    route53_zone_id: &String,
-    rrtype: RrType,
-) -> Result<Vec<IPTYPE>, String>
-where
-    IPTYPE: std::str::FromStr,
-    <IPTYPE as std::str::FromStr>::Err: std::fmt::Display,
-{
-    let mut result = Vec::<IPTYPE>::new();
-
-    let output = client
+    route53_zone_id: &str,
+) -> Result<AddressRecords, String> {
+    // The `set_max_items(Some(2))` below IS SAFE, because we're only interested in 'A' and 'AAAA'
+    // records -- which are sorted *before* any other record types.
+    let response = client
         .list_resource_record_sets()
         .set_hosted_zone_id(Some(route53_zone_id.to_owned()))
-        .set_start_record_name(Some(host_name.to_owned()))
-        .set_start_record_type(Some(rrtype.clone()))
-        .set_max_items(Some(1))
+        .set_start_record_name(Some(host_name.clone()))
+        .set_max_items(Some(2))
         .send()
         .await;
-    match output {
+
+    let mut v4: Option<ResourceRecordSet> = None;
+    let mut v6: Option<ResourceRecordSet> = None;
+    match response {
         Ok(output) => {
-            for rrs in output.resource_record_sets.iter() {
-                if &rrs.name != host_name || rrs.r#type != rrtype {
+            for rrs in output.resource_record_sets {
+                if &rrs.name != host_name {
                     break;
                 }
-
-                debug!("Got name: [{}] (type: {})", rrs.name, rrs.r#type);
-                match &rrs.resource_records {
-                    Some(values) => {
-                        for value_struct in values.iter() {
-                            match value_struct.value.parse::<IPTYPE>() {
-                                Ok(ip) => result.push(ip),
-                                Err(e) => {
-                                    return Err(format!(
-                                        "Got bad '{}' record value back from route53: \"{}\": {}",
-                                        rrtype.as_str(),
-                                        value_struct.value,
-                                        e
-                                    ))
-                                }
-                            }
-                        }
+                match rrs.r#type {
+                    RrType::A => {
+                        assert!(v4.is_none(), "received multiple 'A' records from Route53 (this should be impossible)");
+                        v4 = Some(rrs);
                     }
-                    None => {}
+                    RrType::Aaaa => {
+                        assert!(v6.is_none(), "received multiple 'AAAA' records from Route53 (this should be impossible)");
+                        v6 = Some(rrs);
+                    }
+                    _ => {
+                        break;
+                    }
                 }
             }
         }
-        Err(e) => return Err(e.to_string()),
+        Err(e) => {
+            return Err(e.to_string());
+        }
     };
 
-    Ok(result)
+    Ok(AddressRecords { v4, v6 })
 }
 
-pub async fn get_host_addresses(
-    client: &Client,
-    host_name: &String,
-    route53_zone_id: &Option<String>,
-) -> Result<Addresses, String> {
-    let zone_id = match route53_zone_id {
-        Some(value) => value.to_owned(),
-        None => get_zone_id(client, host_name.as_str()).await?,
+fn _resource_record_set_matches_expected<IPTYPE>(
+    rrs: &ResourceRecordSet,
+    config: &Config,
+    desired_addresses: &Vec<IPTYPE>,
+) -> bool
+where
+    IPTYPE: FromStr + Ord,
+    <IPTYPE as FromStr>::Err: Debug,
+{
+    match rrs.ttl {
+        Some(ttl) => {
+            if ttl != config.route53_record_ttl {
+                return false;
+            }
+        }
+        None => {
+            return false;
+        }
     };
 
-    let fut_ipv4 =
-        get_host_addresses_for_single_rr_type::<Ipv4Addr>(client, host_name, &zone_id, RrType::A);
-    let fut_ipv6 = get_host_addresses_for_single_rr_type::<Ipv6Addr>(
-        client,
-        host_name,
-        &zone_id,
-        RrType::Aaaa,
-    );
+    if !(rrs.alias_target.is_some() || rrs.cidr_routing_config.is_some() || rrs.failover.is_some()
+        || rrs.geo_location.is_some() /* || rrs.health_check_id.is_some() */
+        || rrs.multi_value_answer.is_some() || rrs.region.is_some()
+        || rrs.set_identifier.is_some() || rrs.traffic_policy_instance_id.is_some()
+        || rrs.weight.is_some())
+    {
+        return false;
+    }
 
-    let (result_ipv4, result_ipv6) = join!(fut_ipv4, fut_ipv6);
-    let result_ipv4 = match result_ipv4 {
-        Ok(rrs) => rrs,
-        Err(e) => return Err(e.to_string()),
+    let rrs_ips = {
+        let mut ips: Vec<IPTYPE> = rrs
+            .resource_records()
+            .iter()
+            .map(|rr| {
+                rr.value()
+                    .parse::<IPTYPE>()
+                    .expect("A/AAAA resource records should always parse as valid IP addresses")
+            })
+            .collect();
+        ips.sort();
+        ips
     };
-    let result_ipv6 = match result_ipv6 {
-        Ok(rrs) => rrs,
-        Err(e) => return Err(e.to_string()),
-    };
+    // TODO: This currently works because the two lists are always sorted; we should NOT depend on that convention
+    if &rrs_ips != desired_addresses {
+        return false;
+    }
 
-    Ok(Addresses {
-        v4: result_ipv4,
-        v6: result_ipv6,
-    })
+    true
 }
 
-trait IpAny: std::fmt::Display {}
-impl IpAny for Ipv4Addr {}
-impl IpAny for Ipv6Addr {}
-
-fn _build_r53_change_set(
-    host_name: String,
-    ttl: i64,
-    addresses: &[impl IpAny + Sized],
-    rr_type: aws_sdk_route53::types::RrType,
-    action: aws_sdk_route53::types::ChangeAction,
-) -> Result<aws_sdk_route53::types::Change, String> {
-    let mut rr_vec = Vec::<ResourceRecord>::new();
-    for ip in addresses.iter() {
-        let rr = match aws_sdk_route53::types::ResourceRecord::builder()
-            .set_value(Some(ip.to_string()))
+fn _compare_add_to_change_set<IPTYPE>(
+    config: &Config,
+    desired_addresses: &Vec<IPTYPE>,
+    current_address_records: &Option<ResourceRecordSet>,
+    rr_type: RrType,
+    changes: &mut Vec<Change>,
+) -> Result<(), String>
+where
+    IPTYPE: FromStr + Ord + Display,
+    <IPTYPE as FromStr>::Err: Debug + Display,
+{
+    if desired_addresses.is_empty() {
+        if let Some(current) = &current_address_records {
+            let chg = match Change::builder()
+                .set_action(Some(ChangeAction::Delete))
+                .set_resource_record_set(Some(current.clone()))
+                .build()
+            {
+                Ok(chg) => chg,
+                Err(e) => {
+                    return Err(format!(
+                        "error creating deletion change ({}): {e}",
+                        current.r#type().as_str()
+                    ));
+                }
+            };
+            changes.push(chg);
+        }
+    } else if !current_address_records
+        .as_ref()
+        .is_some_and(|rrs| _resource_record_set_matches_expected(rrs, config, desired_addresses))
+    {
+        let mut v = Vec::<ResourceRecord>::with_capacity(desired_addresses.len());
+        for ip in desired_addresses.iter() {
+            let r = match ResourceRecord::builder()
+                .set_value(Some(ip.to_string()))
+                .build()
+            {
+                Ok(rr) => rr,
+                Err(e) => {
+                    return Err(format!("error creating ResourceRecord: {e}"));
+                }
+            };
+            v.push(r);
+        }
+        let rrs = match ResourceRecordSet::builder()
+            .set_name(Some(config.host_name_normalized.to_owned()))
+            .set_type(Some(rr_type))
+            .set_ttl(Some(config.route53_record_ttl))
+            .set_resource_records(Some(v))
             .build()
         {
-            Ok(r) => r,
-            Err(e) => return Err(format!("convert ip to RR: {e}")),
+            Ok(rrs) => rrs,
+            Err(e) => {
+                return Err(format!("error creating ResourceRecordSet: {e}"));
+            }
         };
-        rr_vec.push(rr);
+        let chg = match Change::builder()
+            .set_action(Some(ChangeAction::Upsert))
+            .set_resource_record_set(Some(rrs))
+            .build()
+        {
+            Ok(chg) => chg,
+            Err(e) => {
+                return Err(format!("error creating change: {e}"));
+            }
+        };
+        changes.push(chg);
     }
-
-    let rrs = match aws_sdk_route53::types::ResourceRecordSet::builder()
-        .set_name(Some(host_name))
-        .set_type(Some(rr_type))
-        .set_resource_records(Some(rr_vec))
-        .set_ttl(Some(ttl))
-        .build()
-    {
-        Ok(rrs) => rrs,
-        Err(e) => return Err(format!("building rrs: {e}")),
-    };
-    let chg = match aws_sdk_route53::types::Change::builder()
-        .set_action(Some(action))
-        .set_resource_record_set(Some(rrs))
-        .build()
-    {
-        Ok(chg) => chg,
-        Err(e) => return Err(format!("building change set: {e}")),
-    };
-
-    Ok(chg)
+    Ok(())
 }
 
-pub async fn set_host_addresses(
+pub enum UpdateHostResult {
+    NotRequired,
+    UpdateSuccessful,
+    UpdateSkipped,
+}
+
+pub async fn update_host_addresses_if_different(
     config: &Config,
     desired_addresses: &Addresses,
-    current_addresses: &Addresses,
-) -> Result<(), String> {
-    let mut changes = Vec::<aws_sdk_route53::types::Change>::new();
-
-    if desired_addresses.v4 != current_addresses.v4 {
-        if desired_addresses.v4.is_empty() {
-            // Need to delete the existing resource record
-            changes.push(_build_r53_change_set(
-                config.host_name.to_owned(),
-                config.route53_record_ttl,
-                &current_addresses.v4,
-                aws_sdk_route53::types::RrType::A,
-                aws_sdk_route53::types::ChangeAction::Delete,
-            )?);
-        } else {
-            // Whether we're updating an existing, or inserting new, we can do both with an 'Upsert' operation
-            changes.push(_build_r53_change_set(
-                config.host_name.to_owned(),
-                config.route53_record_ttl,
-                &desired_addresses.v4,
-                aws_sdk_route53::types::RrType::A,
-                aws_sdk_route53::types::ChangeAction::Upsert,
-            )?);
-        }
-    }
-
-    if desired_addresses.v6 != current_addresses.v6 {
-        if desired_addresses.v6.is_empty() {
-            // Need to delete the existing resource record
-            changes.push(_build_r53_change_set(
-                config.host_name.to_owned(),
-                config.route53_record_ttl,
-                &current_addresses.v6,
-                aws_sdk_route53::types::RrType::Aaaa,
-                aws_sdk_route53::types::ChangeAction::Delete,
-            )?);
-        } else {
-            // Whether we're updating an existing, or inserting new, we can do both with an 'Upsert' operation
-            changes.push(_build_r53_change_set(
-                config.host_name.to_owned(),
-                config.route53_record_ttl,
-                &desired_addresses.v6,
-                aws_sdk_route53::types::RrType::Aaaa,
-                aws_sdk_route53::types::ChangeAction::Upsert,
-            )?);
-        }
-    }
+    current_address_records: &AddressRecords,
+    do_update: bool,
+) -> Result<UpdateHostResult, String> {
+    let changes = {
+        let mut changes = Vec::<Change>::new();
+        _compare_add_to_change_set(
+            config,
+            &desired_addresses.v4,
+            &current_address_records.v4,
+            RrType::A,
+            &mut changes,
+        )?;
+        _compare_add_to_change_set(
+            config,
+            &desired_addresses.v6,
+            &current_address_records.v6,
+            RrType::Aaaa,
+            &mut changes,
+        )?;
+        changes
+    };
 
     if changes.is_empty() {
-        return Ok(());
+        return Ok(UpdateHostResult::NotRequired);
+    } else if !do_update {
+        return Ok(UpdateHostResult::UpdateSkipped);
     }
     let start_time = Instant::now();
     let expiry_time = start_time
         .checked_add(config.update_timeout.to_owned())
         .expect("adding a duration to 'now' should always work");
 
-    let cb = match aws_sdk_route53::types::ChangeBatch::builder()
-        .set_changes(Some(changes))
-        .build()
-    {
+    let cb = match ChangeBatch::builder().set_changes(Some(changes)).build() {
         Ok(cb) => cb,
         Err(e) => return Err(format!("building change batch: {e}")),
     };
@@ -288,7 +304,7 @@ pub async fn set_host_addresses(
         .route53_client
         .change_resource_record_sets()
         .set_change_batch(Some(cb))
-        .set_hosted_zone_id(config.route53_zone_id.to_owned())
+        .set_hosted_zone_id(Some(config.route53_zone_id.to_owned()))
         .send();
     let timeout_fut = timeout(config.update_timeout.to_owned(), change_fut);
 
@@ -318,8 +334,8 @@ pub async fn set_host_addresses(
         .change_info
         .expect("Change-responses should include change-info");
     loop {
-        if ci.status == aws_sdk_route53::types::ChangeStatus::Insync {
-            return Ok(());
+        if ci.status == ChangeStatus::Insync {
+            return Ok(UpdateHostResult::UpdateSuccessful);
         }
 
         debug!("Change is not yet synchronized.");
@@ -330,7 +346,7 @@ pub async fn set_host_addresses(
         }
         let time_remaining = expiry_time - now;
 
-        sleep(std::cmp::min(time_remaining, config.update_poll_interval)).await;
+        sleep(min(time_remaining, config.update_poll_interval)).await;
 
         debug!("Re-checking whether change is synchronized...");
         let output = match config

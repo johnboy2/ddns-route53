@@ -127,24 +127,28 @@ async fn main() {
     };
     debug!("Got route53: {:?}", addresses_route53);
 
-    if addresses_current == addresses_route53 {
-        debug!("Current addresses match route53 configuration; no update required.");
-        return;
-    } else if args.no_update {
-        warn!("Current addresses DO NOT match configuration, but not updating due to --no_update");
-        std::process::exit(78); // Code matches the BSD definition for "EX_CONFIG".
-    }
-
     debug!("Address mismatch: attempting route53 update...");
-    match crate::aws_route53::set_host_addresses(
+    match update_host_addresses_if_different(
         &arc_config,
         &addresses_current,
         &addresses_route53,
+        !args.no_update,
     )
     .await
     {
-        Ok(()) => {
-            info!("Update successful")
+        Ok(result) => {
+            match result {
+                UpdateHostResult::NotRequired => {
+                    info!("Update not required");
+                }
+                UpdateHostResult::UpdateSuccessful => {
+                    info!("Update successful");
+                }
+                UpdateHostResult::UpdateSkipped => {
+                    warn!("Update required, but skipped due to --no_update");
+                    exit(78); // Code matches the BSD definition for "EX_CONFIG".
+                }
+            }
         }
         Err(e) => {
             error!("Update failed: {e}")
