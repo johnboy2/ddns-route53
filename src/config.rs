@@ -452,11 +452,12 @@ impl Config {
             debug!("ipv4: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
             match algo_result {
-                Ok(ips) => {
+                Ok(mut ips) => {
                     debug!("ipv4: got addresses: {:?}", &ips);
                     if ips.is_empty() {
                         debug!("ipv4: skipping empty result for algorithm: {}", name);
                     } else {
+                        ips.sort();
                         debug!("ipv4: return {} found address(es)", ips.len());
                         return ips;
                     }
@@ -476,11 +477,12 @@ impl Config {
             debug!("ipv6: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
             match algo_result {
-                Ok(ips) => {
+                Ok(mut ips) => {
                     debug!("ipv6: got addresses: {:?}", &ips);
                     if ips.is_empty() {
                         debug!("ipv6: skipping empty result for algorithm: {}", name);
                     } else {
+                        ips.sort();
                         debug!("ipv6: return {} found address(es)", ips.len());
                         return ips;
                     }
