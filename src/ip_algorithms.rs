@@ -1,18 +1,21 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::LazyLock;
 use std::time::Duration;
 use std::vec::Vec;
 
+use igd_next::{search_gateway, SearchOptions};
 use log::debug;
-use netdev::Interface;
+use netdev::{get_default_interface, Interface};
+use reqwest::{Client, ClientBuilder, Url};
+use tokio::task::{spawn_blocking, JoinError};
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
-    LazyLock::new(netdev::get_default_interface);
+    LazyLock::new(get_default_interface);
 
-static WEB_CLIENT: LazyLock<Result<reqwest::Client, String>> =
-    LazyLock::new(|| match reqwest::ClientBuilder::new().build() {
+static WEB_CLIENT: LazyLock<Result<Client, String>> =
+    LazyLock::new(|| match ClientBuilder::new().build() {
         Ok(client) => Ok(client),
         Err(e) => Err(e.to_string()),
     });
@@ -91,8 +94,8 @@ fn ipv6_is_global(ip: &Ipv6Addr) -> bool {
 
 // Helper to download a document from a URL
 async fn get_web_service_document(
-    client: &reqwest::Client,
-    url: reqwest::Url,
+    client: &Client,
+    url: Url,
     url_string: &String,
     timeout: Duration,
 ) -> Result<String, String> {
@@ -131,7 +134,7 @@ pub async fn get_default_public_ip_v4() -> Result<Vec<Ipv4Addr>, String> {
         Err(e) => return Err(e.to_owned()),
     };
 
-    let mut result = std::vec::Vec::<Ipv4Addr>::new();
+    let mut result = Vec::<Ipv4Addr>::new();
     for ip_net in &default_interface.ipv4 {
         let ip_net_addr = ip_net.addr();
         if ipv4_is_global(&ip_net_addr) {
@@ -149,12 +152,12 @@ pub async fn get_default_public_ip_v4() -> Result<Vec<Ipv4Addr>, String> {
 
 pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
     // This algorithm blocks, so we spin it off into its own thread.
-    let thread_result: Result<Result<Vec<Ipv4Addr>, String>, tokio::task::JoinError> = tokio::task::spawn_blocking(move || {
-        let search_option = igd_next::SearchOptions {
+    let thread_result: Result<Result<Vec<Ipv4Addr>, String>, JoinError> = spawn_blocking(move || {
+        let search_option = SearchOptions {
             timeout: Some(timeout),
             ..Default::default()
         };
-        let gateway = match igd_next::search_gateway(search_option) {
+        let gateway = match search_gateway(search_option) {
             Ok(gw) => gw,
             Err(e) => {
                 return Err(
@@ -165,7 +168,7 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
 
         match gateway.get_external_ip() {
             Ok(ip) => {
-                if let std::net::IpAddr::V4(v4) = ip {
+                if let IpAddr::V4(v4) = ip {
                     if ipv4_is_global(&v4) {
                         return Ok(vec![v4]);
                     } else {
@@ -194,7 +197,7 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
 }
 
 pub async fn get_web_service_ip_v4(
-    url: reqwest::Url,
+    url: Url,
     url_string: String,
     timeout: Duration,
 ) -> Result<Vec<Ipv4Addr>, String> {
@@ -234,7 +237,7 @@ pub async fn get_default_public_ip_v6() -> Result<Vec<Ipv6Addr>, String> {
         Err(e) => return Err(e.to_owned()),
     };
 
-    let mut result = std::vec::Vec::<Ipv6Addr>::new();
+    let mut result = Vec::<Ipv6Addr>::new();
     for ip_net in &default_interface.ipv6 {
         let ip_net_addr = ip_net.addr();
         if ipv6_is_global(&ip_net_addr) {
@@ -251,7 +254,7 @@ pub async fn get_default_public_ip_v6() -> Result<Vec<Ipv6Addr>, String> {
 }
 
 pub async fn get_web_service_ip_v6(
-    url: reqwest::Url,
+    url: Url,
     url_string: String,
     timeout: Duration,
 ) -> Result<Vec<Ipv6Addr>, String> {

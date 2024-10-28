@@ -1,9 +1,8 @@
 use core::str;
+use std::collections::HashSet;
 use std::fs::File;
 use std::future::Future;
-use std::io::BufReader;
-use std::io::Read;
-use std::io::Seek;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Fn;
 use std::pin::Pin;
@@ -11,6 +10,7 @@ use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
 use derivative::Derivative;
+use idna::{domain_to_ascii_cow, AsciiDenyList};
 use log::{debug, warn, LevelFilter};
 use regex::Regex;
 use serde::Deserialize;
@@ -121,7 +121,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
 
     let mut reader = BufReader::new(f);
 
-    let file_size = match reader.seek(std::io::SeekFrom::End(0)) {
+    let file_size = match reader.seek(SeekFrom::End(0)) {
         Ok(size) => size,
         Err(e) => {
             return Err(format!("I/O error with file [{config_path}]: {e}",));
@@ -135,7 +135,7 @@ fn read_config_file(config_path: &String) -> Result<FileConfig, String> {
     }
     if file_size != 0 {
         reader
-            .seek(std::io::SeekFrom::Start(0))
+            .seek(SeekFrom::Start(0))
             .expect("seek to start should always work");
     }
 
@@ -189,7 +189,7 @@ struct V4AlgoResult {
 fn build_v4_algos(specs: &[AlgorithmSpecification]) -> Result<V4AlgoResult, String> {
     let mut have_default = false;
     let mut have_igd = false;
-    let mut have_web_service_url = std::collections::HashSet::<&str>::with_capacity(specs.len());
+    let mut have_web_service_url = HashSet::<&str>::with_capacity(specs.len());
     let mut descriptions = Vec::<String>::with_capacity(specs.len());
     let mut functions = Vec::<Box<V4AlgoFn>>::new();
     for spec in specs.iter() {
@@ -278,7 +278,7 @@ struct V6AlgoResult {
 
 fn build_v6_algos(specs: &[AlgorithmSpecification]) -> Result<V6AlgoResult, String> {
     let mut have_default = false;
-    let mut have_web_service_url = std::collections::HashSet::<&str>::with_capacity(specs.len());
+    let mut have_web_service_url = HashSet::<&str>::with_capacity(specs.len());
     let mut descriptions = Vec::<String>::with_capacity(specs.len());
     let mut functions = Vec::<Box<V6AlgoFn>>::new();
     for spec in specs.iter() {
@@ -364,9 +364,8 @@ impl Config {
         let config_file = read_config_file(config_path)?;
 
         let host_name_normalized = {
-            let name_lower = config_file.host_name.to_lowercase();
             let mut name_lower_idna =
-                match idna::domain_to_ascii_cow(name_lower.as_bytes(), idna::AsciiDenyList::URL) {
+                match domain_to_ascii_cow(config_file.host_name.as_bytes(), AsciiDenyList::URL) {
                     Ok(r) => r,
                     Err(e) => {
                         return Err(format!("Failed to convert hostname to IDNA: {e}"));
