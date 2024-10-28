@@ -174,7 +174,7 @@ pub struct Config {
     ipv6_algorithms: Vec<String>,
 
     pub route53_client: ::aws_sdk_route53::Client,
-    pub route53_zone_id: Option<String>,
+    pub route53_zone_id: String,
     pub route53_record_ttl: i64,
     log_file: Option<String>,
     log_level: LevelFilter,
@@ -403,6 +403,11 @@ impl Config {
         )
         .await;
 
+        let zone_id = match config_file.aws_route53_zone_id {
+            Some(zone) => zone,
+            None => crate::aws_route53::get_zone_id(&client, host_name_normalized.as_ref()).await?,
+        };
+
         Ok(Self {
             host_name: config_file.host_name,
             host_name_normalized,
@@ -413,7 +418,7 @@ impl Config {
             ipv6_algorithms: v6_algos.descriptions,
             ipv6_algo_fns: v6_algos.functions,
             route53_client: client,
-            route53_zone_id: config_file.aws_route53_zone_id,
+            route53_zone_id: zone_id,
             route53_record_ttl: ttl,
             log_file: config_file.log_file,
             log_level: parse_log_level(&config_file.log_level, LevelFilter::Info)?,
