@@ -6,7 +6,7 @@ use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
 use igd_next::{search_gateway, SearchOptions};
-use log::debug;
+use log::{debug, trace};
 use netdev::{get_default_interface, Interface};
 use reqwest::{Client, ClientBuilder, Url};
 use tokio::task::spawn_blocking;
@@ -176,6 +176,7 @@ pub async fn get_web_service_ip_v4(
 
     let mut result = Vec::<Ipv4Addr>::new();
     for line in body.as_str().lines() {
+        trace!("Received result: \"{line}\"");
         let ip =
             Ipv4Addr::from_str(line).context("failed to parse IPv4 address from web service")?;
         if ipv4_is_global(&ip) {
@@ -226,6 +227,7 @@ pub async fn get_web_service_ip_v6(
 
     let mut result = Vec::<Ipv6Addr>::new();
     for line in body.as_str().lines() {
+        trace!("Received result: \"{line}\"");
         let ip =
             Ipv6Addr::from_str(line).context("failed to parse IPv4 address from web service")?;
         if ipv6_is_global(&ip) {
