@@ -133,6 +133,7 @@ fn _resource_record_set_matches_expected<IPTYPE>(
     rrs: &ResourceRecordSet,
     config: &Config,
     desired_addresses: &Vec<IPTYPE>,
+    log_prefix: &'static str,
 ) -> bool
 where
     IPTYPE: FromStr + Ord,
@@ -141,10 +142,12 @@ where
     match rrs.ttl {
         Some(ttl) => {
             if ttl != config.route53_record_ttl {
+                debug!("{log_prefix}: TTL mismatch (want={}, found={ttl})", config.route53_record_ttl);
                 return false;
             }
         }
         None => {
+            debug!("{log_prefix}: TTL mismatch (want={}, found=None)", config.route53_record_ttl);
             return false;
         }
     };
@@ -163,7 +166,7 @@ where
         let name = pair.1;
         if is_some {
             debug!("{log_prefix}: field is unexpectedly populated: {name}");
-        return false;
+            return false;
         }
     }
 
@@ -182,6 +185,7 @@ where
     };
     // TODO: This currently works because the two lists are always sorted; we should NOT depend on that convention
     if &rrs_ips != desired_addresses {
+        debug!("{log_prefix}: IP mismatch");
         return false;
     }
 
@@ -194,6 +198,7 @@ fn _compare_add_to_change_set<IPTYPE>(
     current_address_records: &Option<ResourceRecordSet>,
     rr_type: RrType,
     changes: &mut Vec<Change>,
+    log_prefix: &'static str,
 ) -> anyhow::Result<()>
 where
     IPTYPE: FromStr + Ord + Display,
@@ -201,16 +206,20 @@ where
 {
     if desired_addresses.is_empty() {
         if let Some(current) = &current_address_records {
+            debug!("{log_prefix}: adding DELETE");
             let chg = Change::builder()
                 .set_action(Some(ChangeAction::Delete))
                 .set_resource_record_set(Some(current.clone()))
                 .build()?;
             changes.push(chg);
+        } else {
+            debug!("{log_prefix}: no changes required");
         }
     } else if !current_address_records
         .as_ref()
-        .is_some_and(|rrs| _resource_record_set_matches_expected(rrs, config, desired_addresses))
+        .is_some_and(|rrs| _resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix))
     {
+        debug!("{log_prefix}: adding UPSERT");
         let mut v = Vec::<ResourceRecord>::with_capacity(desired_addresses.len());
         for ip in desired_addresses.iter() {
             let r = ResourceRecord::builder()
@@ -229,6 +238,8 @@ where
             .set_resource_record_set(Some(rrs))
             .build()?;
         changes.push(chg);
+    } else {
+        debug!("{log_prefix}: no changes required");
     }
     Ok(())
 }
@@ -253,6 +264,7 @@ pub async fn update_host_addresses_if_different(
             &current_address_records.v4,
             RrType::A,
             &mut changes,
+            "ipv4",
         )?;
         _compare_add_to_change_set(
             config,
@@ -260,6 +272,7 @@ pub async fn update_host_addresses_if_different(
             &current_address_records.v6,
             RrType::Aaaa,
             &mut changes,
+            "ipv6",
         )?;
         changes
     };
