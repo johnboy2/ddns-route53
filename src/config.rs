@@ -31,12 +31,25 @@ static MAX_UPDATE_TIMEOUT_SECONDS: f64 = 3600.0;
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
-enum AlgorithmSpecification {
+enum AlgorithmSpecificationV4 {
     #[serde(rename = "default_public_ip")]
     DefaultPublicIp,
 
     #[serde(rename = "internet_gateway_protocol")]
     InternetGatewayProtocol { timeout_seconds: Option<f64> },
+
+    #[serde(rename = "web_service")]
+    WebService {
+        url: String,
+        timeout_seconds: Option<f64>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum AlgorithmSpecificationV6 {
+    #[serde(rename = "default_public_ip")]
+    DefaultPublicIp,
 
     #[serde(rename = "web_service")]
     WebService {
@@ -55,8 +68,8 @@ struct FileConfig {
     #[serde(default = "default_update_timeout_seconds")]
     update_timeout_seconds: f64,
 
-    ipv4_algorithms: Vec<AlgorithmSpecification>,
-    ipv6_algorithms: Vec<AlgorithmSpecification>,
+    ipv4_algorithms: Vec<AlgorithmSpecificationV4>,
+    ipv6_algorithms: Vec<AlgorithmSpecificationV6>,
     aws_profile: Option<String>,
     aws_access_key_id: Option<String>,
     aws_secret_access_key: Option<String>,
@@ -161,7 +174,7 @@ struct V4AlgoResult {
     functions: Vec<Box<V4AlgoFn>>,
 }
 
-fn build_v4_algos(specs: &[AlgorithmSpecification]) -> anyhow::Result<V4AlgoResult> {
+fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoResult> {
     let mut have_default = false;
     let mut have_igd = false;
     let mut have_web_service_url = HashSet::<&str>::with_capacity(specs.len());
@@ -169,7 +182,7 @@ fn build_v4_algos(specs: &[AlgorithmSpecification]) -> anyhow::Result<V4AlgoResu
     let mut functions = Vec::<Box<V4AlgoFn>>::new();
     for spec in specs.iter() {
         match spec {
-            AlgorithmSpecification::DefaultPublicIp => {
+            AlgorithmSpecificationV4::DefaultPublicIp => {
                 let name = "default_public_ip";
                 if have_default {
                     return Err(anyhow!("ipv4:{name} can only be given once"));
@@ -180,7 +193,7 @@ fn build_v4_algos(specs: &[AlgorithmSpecification]) -> anyhow::Result<V4AlgoResu
                     Box::pin(crate::ip_algorithms::get_default_public_ip_v4())
                 }));
             }
-            AlgorithmSpecification::InternetGatewayProtocol { timeout_seconds } => {
+            AlgorithmSpecificationV4::InternetGatewayProtocol { timeout_seconds } => {
                 let name = "internet_gateway_protocol";
                 if have_igd {
                     return Err(anyhow!("ipv4:{name} can only be given once"));
@@ -200,7 +213,7 @@ fn build_v4_algos(specs: &[AlgorithmSpecification]) -> anyhow::Result<V4AlgoResu
                     Box::pin(crate::ip_algorithms::get_igd_ip_v4(timeout))
                 }));
             }
-            AlgorithmSpecification::WebService {
+            AlgorithmSpecificationV4::WebService {
                 url,
                 timeout_seconds,
             } => {
@@ -242,14 +255,14 @@ struct V6AlgoResult {
     functions: Vec<Box<V6AlgoFn>>,
 }
 
-fn build_v6_algos(specs: &[AlgorithmSpecification]) -> anyhow::Result<V6AlgoResult> {
+fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoResult> {
     let mut have_default = false;
     let mut have_web_service_url = HashSet::<&str>::with_capacity(specs.len());
     let mut descriptions = Vec::<String>::with_capacity(specs.len());
     let mut functions = Vec::<Box<V6AlgoFn>>::new();
     for spec in specs.iter() {
         match spec {
-            AlgorithmSpecification::DefaultPublicIp => {
+            AlgorithmSpecificationV6::DefaultPublicIp => {
                 let name = "default_public_ip";
                 if have_default {
                     return Err(anyhow!("ipv6:{name} can only be given once"));
@@ -260,11 +273,7 @@ fn build_v6_algos(specs: &[AlgorithmSpecification]) -> anyhow::Result<V6AlgoResu
                     Box::pin(crate::ip_algorithms::get_default_public_ip_v6())
                 }));
             }
-            AlgorithmSpecification::InternetGatewayProtocol { timeout_seconds: _ } => {
-                // TODO: consider making this error the same as any other unknown/invalid "type"
-                panic!("config:ipv6_algoritms does not ipmlement internet_gateway_protocol");
-            }
-            AlgorithmSpecification::WebService {
+            AlgorithmSpecificationV6::WebService {
                 url,
                 timeout_seconds,
             } => {
