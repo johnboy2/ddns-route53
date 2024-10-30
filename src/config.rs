@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use derivative::Derivative;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
 use lazy_format::lazy_format;
@@ -117,11 +117,13 @@ fn check_bounded_integer(
 }
 
 fn read_config_file(config_path: &String) -> anyhow::Result<FileConfig> {
-    let f = File::open(config_path)?;
+    let f = File::open(config_path).context("I/O error opening config file")?;
 
     let mut reader = BufReader::new(f);
 
-    let file_size = reader.seek(SeekFrom::End(0))?;
+    let file_size = reader
+        .seek(SeekFrom::End(0))
+        .context("I/O error seeking within config file")?;
     if MAX_CONFIG_FILE_SIZE < file_size {
         return Err(anyhow!(
             "file too large: {config_path} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE})"
@@ -134,9 +136,11 @@ fn read_config_file(config_path: &String) -> anyhow::Result<FileConfig> {
     }
 
     let mut content = String::new();
-    reader.read_to_string(&mut content)?;
+    reader
+        .read_to_string(&mut content)
+        .context("I/O error reading config file")?;
 
-    let file_config = toml::from_str(content.as_str())?;
+    let file_config = toml::from_str(content.as_str()).context("failed to load config file")?;
     Ok(file_config)
 }
 
@@ -222,7 +226,8 @@ fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoRe
                     return Err(anyhow!("ipv4:{name} can only be given once"));
                 }
                 let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
-                let url_parsed = Url::parse(url)?;
+                let url_parsed =
+                    Url::parse(url).context(format!("could not parse url: \"{url}\""))?;
                 let url_owned = url.to_owned();
                 let timeout = match timeout_seconds {
                     Some(timeout_secs) => {
@@ -282,7 +287,8 @@ fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoRe
                     return Err(anyhow!("ipv6:{name} can only be given once"));
                 }
                 let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
-                let url_parsed = Url::parse(url)?;
+                let url_parsed =
+                    Url::parse(url).context(format!("could not parse url: \"{url}\""))?;
                 let url_owned = url.to_owned();
                 let timeout = match timeout_seconds {
                     Some(timeout_secs) => {
@@ -342,9 +348,11 @@ impl Config {
 
         let host_name_normalized = {
             let mut name_lower_idna =
-                domain_to_ascii_cow(config_file.host_name.as_bytes(), AsciiDenyList::URL)?
-                    .into_owned();
-            validate_host_name(name_lower_idna.as_str())?;
+                domain_to_ascii_cow(config_file.host_name.as_bytes(), AsciiDenyList::URL)
+                    .map(|s| s.into_owned())
+                    .context("invalid hostname")?;
+
+            validate_host_name(name_lower_idna.as_str()).context("invalid hostname")?;
             if !name_lower_idna.ends_with(".") {
                 name_lower_idna += ".";
             }
@@ -373,11 +381,13 @@ impl Config {
             update_poll_interval: check_timeout(
                 config_file.update_poll_seconds,
                 Some(MAX_UPDATE_POLL_SECONDS),
-            )?,
+            )
+            .context("config: invalid \"update_poll_seconds\"")?,
             update_timeout: check_timeout(
                 config_file.update_timeout_seconds,
                 Some(MAX_UPDATE_TIMEOUT_SECONDS),
-            )?,
+            )
+            .context("config: invalid \"update_timeout_seconds\"")?,
             ipv4_algorithms: v4_algos.descriptions,
             ipv4_algo_fns: v4_algos.functions,
             ipv6_algorithms: v6_algos.descriptions,
@@ -388,10 +398,13 @@ impl Config {
                 config_file.aws_route53_record_ttl,
                 Some(0i64),
                 Some(2147483647i64),
-            )?,
+            )
+            .context("config: invalid \"aws_route53_record_ttl\"")?,
             log_file: config_file.log_file,
-            log_level: parse_log_level(&config_file.log_level, LevelFilter::Info)?,
-            log_level_other: parse_log_level(&config_file.log_level_other, LevelFilter::Warn)?,
+            log_level: parse_log_level(&config_file.log_level, LevelFilter::Info)
+                .context("config: invalid \"log_level\"")?,
+            log_level_other: parse_log_level(&config_file.log_level_other, LevelFilter::Warn)
+                .context("config: invalid \"log_level_other\"")?,
         })
     }
 

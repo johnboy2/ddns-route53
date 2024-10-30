@@ -3,7 +3,7 @@ use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use std::time::Instant;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use aws_config::profile::ProfileFileCredentialsProvider;
 use aws_sdk_route53::config::Credentials;
 use aws_sdk_route53::types::{
@@ -73,7 +73,7 @@ fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
 pub async fn get_zone_id(client: &Client, host_name: &str) -> anyhow::Result<String> {
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
-        let page_output = page?;
+        let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
             if host_is_in_domain(host_name, zone.name()) {
                 return Ok(zone.id.to_owned());
@@ -97,7 +97,8 @@ pub async fn get_resource_records(
         .set_start_record_name(Some(host_name.clone()))
         .set_max_items(Some(2))
         .send()
-        .await?;
+        .await
+        .context("error calling Route53:ListResourceRecordSet")?;
 
     let mut v4: Option<ResourceRecordSet> = None;
     let mut v6: Option<ResourceRecordSet> = None;
@@ -210,7 +211,8 @@ where
             let chg = Change::builder()
                 .set_action(Some(ChangeAction::Delete))
                 .set_resource_record_set(Some(current.clone()))
-                .build()?;
+                .build()
+                .context("error building Route53:Change (deletion) object")?;
             changes.push(chg);
         } else {
             debug!("{log_prefix}: no changes required");
@@ -224,7 +226,8 @@ where
         for ip in desired_addresses.iter() {
             let r = ResourceRecord::builder()
                 .set_value(Some(ip.to_string()))
-                .build()?;
+                .build()
+                .context("error building Route53:ResourceRecord object")?;
             v.push(r);
         }
         let rrs = ResourceRecordSet::builder()
@@ -232,11 +235,13 @@ where
             .set_type(Some(rr_type))
             .set_ttl(Some(config.route53_record_ttl))
             .set_resource_records(Some(v))
-            .build()?;
+            .build()
+            .context("error building Route53:ResourceRecordSet object")?;
         let chg = Change::builder()
             .set_action(Some(ChangeAction::Upsert))
             .set_resource_record_set(Some(rrs))
-            .build()?;
+            .build()
+            .context("error building Route53:Change (upsert) object")?;
         changes.push(chg);
     } else {
         debug!("{log_prefix}: no changes required");
@@ -265,7 +270,8 @@ pub async fn update_host_addresses_if_different(
             RrType::A,
             &mut changes,
             "ipv4",
-        )?;
+        )
+        .context("determining ipv4-specific changes")?;
         _compare_add_to_change_set(
             config,
             &desired_addresses.v6,
@@ -273,7 +279,8 @@ pub async fn update_host_addresses_if_different(
             RrType::Aaaa,
             &mut changes,
             "ipv6",
-        )?;
+        )
+        .context("error determining ipv6-specific changes")?;
         changes
     };
 
@@ -287,7 +294,10 @@ pub async fn update_host_addresses_if_different(
         .checked_add(config.update_timeout.to_owned())
         .expect("adding a duration to 'now' should always work");
 
-    let cb = ChangeBatch::builder().set_changes(Some(changes)).build()?;
+    let cb = ChangeBatch::builder()
+        .set_changes(Some(changes))
+        .build()
+        .context("error builing Route53:ChangeBatch object")?;
     let change_fut = config
         .route53_client
         .change_resource_record_sets()
@@ -323,7 +333,8 @@ pub async fn update_host_addresses_if_different(
             .get_change()
             .set_id(Some(ci.id))
             .send()
-            .await?;
+            .await
+            .context("error calling Route53:GetChange")?;
         ci = output
             .change_info
             .expect("Change-lookups should return change-info")

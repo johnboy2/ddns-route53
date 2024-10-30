@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::vec::Vec;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use igd_next::{search_gateway, SearchOptions};
 use log::debug;
 use netdev::{get_default_interface, Interface};
@@ -96,7 +96,7 @@ async fn get_web_service_document(
     timeout: Duration,
 ) -> anyhow::Result<String> {
     let request = client.get(url).timeout(timeout).send();
-    let response = request.await?;
+    let response = request.await.context("error fetching url")?;
 
     if let Some(cl) = response.content_length() {
         if MAX_WEB_SERVICE_DOCUMENT_LENGTH < cl {
@@ -110,12 +110,15 @@ async fn get_web_service_document(
     }
 
     // TODO: implement a maximum read size for a streaming response
-    let body = response.text().await?;
+    let body = response.text().await.context("error reading from url")?;
     Ok(body)
 }
 
 pub async fn get_default_public_ip_v4() -> anyhow::Result<Vec<Ipv4Addr>> {
-    let default_interface = (*DEFAULT_INTERFACE).as_ref().map_err(anyhow::Error::msg)?;
+    let default_interface = (*DEFAULT_INTERFACE)
+        .as_ref()
+        .map_err(anyhow::Error::msg)
+        .context("failed to determine default network interface")?;
 
     let mut result = Vec::<Ipv4Addr>::new();
     for ip_net in &default_interface.ipv4 {
@@ -140,9 +143,11 @@ pub async fn get_igd_ip_v4(timeout: Duration) -> anyhow::Result<Vec<Ipv4Addr>> {
             timeout: Some(timeout),
             ..Default::default()
         };
-        let gateway = search_gateway(search_option)?;
+        let gateway = search_gateway(search_option).context("error finding internet gateway")?;
 
-        let ip = gateway.get_external_ip()?;
+        let ip = gateway
+            .get_external_ip()
+            .context("error parsing external IP from internet gateway")?;
         if let IpAddr::V4(v4) = ip {
             if ipv4_is_global(&v4) {
                 return Ok(vec![v4]);
@@ -163,13 +168,16 @@ pub async fn get_web_service_ip_v4(
     url_string: String,
     timeout: Duration,
 ) -> anyhow::Result<Vec<Ipv4Addr>> {
-    let client = (*WEB_CLIENT).as_ref()?;
+    let client = (*WEB_CLIENT)
+        .as_ref()
+        .context("failed to initialize web client")?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
 
     let mut result = Vec::<Ipv4Addr>::new();
     for line in body.as_str().lines() {
-        let ip = Ipv4Addr::from_str(line)?;
+        let ip =
+            Ipv4Addr::from_str(line).context("failed to parse IPv4 address from web service")?;
         if ipv4_is_global(&ip) {
             result.push(ip)
         } else {
@@ -184,7 +192,10 @@ pub async fn get_web_service_ip_v4(
 }
 
 pub async fn get_default_public_ip_v6() -> anyhow::Result<Vec<Ipv6Addr>> {
-    let default_interface = (*DEFAULT_INTERFACE).as_ref().map_err(anyhow::Error::msg)?;
+    let default_interface = (*DEFAULT_INTERFACE)
+        .as_ref()
+        .map_err(anyhow::Error::msg)
+        .context("failed to determine default network interface")?;
 
     let mut result = Vec::<Ipv6Addr>::new();
     for ip_net in &default_interface.ipv6 {
@@ -207,13 +218,16 @@ pub async fn get_web_service_ip_v6(
     url_string: String,
     timeout: Duration,
 ) -> anyhow::Result<Vec<Ipv6Addr>> {
-    let client = (*WEB_CLIENT).as_ref()?;
+    let client = (*WEB_CLIENT)
+        .as_ref()
+        .context("failed to initialize web client")?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
 
     let mut result = Vec::<Ipv6Addr>::new();
     for line in body.as_str().lines() {
-        let ip = Ipv6Addr::from_str(line)?;
+        let ip =
+            Ipv6Addr::from_str(line).context("failed to parse IPv4 address from web service")?;
         if ipv6_is_global(&ip) {
             result.push(ip)
         } else {
