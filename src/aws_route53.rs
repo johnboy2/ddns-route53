@@ -143,12 +143,18 @@ where
     match rrs.ttl {
         Some(ttl) => {
             if ttl != config.route53_record_ttl {
-                debug!("{log_prefix}: TTL mismatch (want={}, found={ttl})", config.route53_record_ttl);
+                debug!(
+                    "{log_prefix}: TTL mismatch (want={}, found={ttl})",
+                    config.route53_record_ttl
+                );
                 return false;
             }
         }
         None => {
-            debug!("{log_prefix}: TTL mismatch (want={}, found=None)", config.route53_record_ttl);
+            debug!(
+                "{log_prefix}: TTL mismatch (want={}, found=None)",
+                config.route53_record_ttl
+            );
             return false;
         }
     };
@@ -161,8 +167,13 @@ where
         (rrs.multi_value_answer.is_some(), "multi_value_answer"),
         (rrs.region.is_some(), "region"),
         (rrs.set_identifier.is_some(), "set_identifier"),
-        (rrs.traffic_policy_instance_id.is_some(), "traffic_policy_instance_id"),
-    ].iter() {
+        (
+            rrs.traffic_policy_instance_id.is_some(),
+            "traffic_policy_instance_id",
+        ),
+    ]
+    .iter()
+    {
         let is_some = pair.0;
         let name = pair.1;
         if is_some {
@@ -217,10 +228,9 @@ where
         } else {
             debug!("{log_prefix}: no changes required");
         }
-    } else if !current_address_records
-        .as_ref()
-        .is_some_and(|rrs| _resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix))
-    {
+    } else if !current_address_records.as_ref().is_some_and(|rrs| {
+        _resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix)
+    }) {
         debug!("{log_prefix}: adding UPSERT");
         let mut v = Vec::<ResourceRecord>::with_capacity(desired_addresses.len());
         for ip in desired_addresses.iter() {
