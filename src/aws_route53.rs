@@ -149,13 +149,22 @@ where
         }
     };
 
-    if !(rrs.alias_target.is_some() || rrs.cidr_routing_config.is_some() || rrs.failover.is_some()
-        || rrs.geo_location.is_some() /* || rrs.health_check_id.is_some() */
-        || rrs.multi_value_answer.is_some() || rrs.region.is_some()
-        || rrs.set_identifier.is_some() || rrs.traffic_policy_instance_id.is_some()
-        || rrs.weight.is_some())
-    {
+    for pair in [
+        (rrs.alias_target.is_some(), "alias_target"),
+        (rrs.cidr_routing_config.is_some(), "cidr_routing_config"),
+        (rrs.failover.is_some(), "failover"),
+        (rrs.geo_location.is_some(), "geo_location"),
+        (rrs.multi_value_answer.is_some(), "multi_value_answer"),
+        (rrs.region.is_some(), "region"),
+        (rrs.set_identifier.is_some(), "set_identifier"),
+        (rrs.traffic_policy_instance_id.is_some(), "traffic_policy_instance_id"),
+    ].iter() {
+        let is_some = pair.0;
+        let name = pair.1;
+        if is_some {
+            debug!("{log_prefix}: field is unexpectedly populated: {name}");
         return false;
+        }
     }
 
     let rrs_ips = {
