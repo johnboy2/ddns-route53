@@ -3,6 +3,7 @@ use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use std::time::Instant;
 
+use anyhow::anyhow;
 use aws_config::profile::ProfileFileCredentialsProvider;
 use aws_sdk_route53::config::Credentials;
 use aws_sdk_route53::types::{
@@ -10,7 +11,7 @@ use aws_sdk_route53::types::{
 };
 use aws_sdk_route53::Client;
 use aws_types::region::Region;
-use log::{debug, error};
+use log::debug;
 use tokio::time::{sleep, timeout};
 
 use crate::addresses::{AddressRecords, Addresses};
@@ -69,29 +70,25 @@ fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
     false
 }
 
-pub async fn get_zone_id(client: &Client, host_name: &str) -> Result<String, String> {
+pub async fn get_zone_id(client: &Client, host_name: &str) -> anyhow::Result<String> {
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
-        match page {
-            Ok(result) => {
-                for zone in result.hosted_zones.iter() {
-                    if host_is_in_domain(host_name, zone.name()) {
-                        return Ok(zone.id.to_owned());
-                    }
-                }
+        let page_output = page?;
+        for zone in page_output.hosted_zones.iter() {
+            if host_is_in_domain(host_name, zone.name()) {
+                return Ok(zone.id.to_owned());
             }
-            Err(e) => return Err(e.to_string()),
-        };
+        }
     }
 
-    Err("not found".to_owned())
+    Err(anyhow!("zone not found: \"{host_name}\""))
 }
 
 pub async fn get_resource_records(
     client: &Client,
     host_name: &String,
     route53_zone_id: &str,
-) -> Result<AddressRecords, String> {
+) -> anyhow::Result<AddressRecords> {
     // The `set_max_items(Some(2))` below IS SAFE, because we're only interested in 'A' and 'AAAA'
     // records -- which are sorted *before* any other record types.
     let response = client
@@ -100,35 +97,34 @@ pub async fn get_resource_records(
         .set_start_record_name(Some(host_name.clone()))
         .set_max_items(Some(2))
         .send()
-        .await;
+        .await?;
 
     let mut v4: Option<ResourceRecordSet> = None;
     let mut v6: Option<ResourceRecordSet> = None;
-    match response {
-        Ok(output) => {
-            for rrs in output.resource_record_sets {
-                if &rrs.name != host_name {
-                    break;
-                }
-                match rrs.r#type {
-                    RrType::A => {
-                        assert!(v4.is_none(), "received multiple 'A' records from Route53 (this should be impossible)");
-                        v4 = Some(rrs);
-                    }
-                    RrType::Aaaa => {
-                        assert!(v6.is_none(), "received multiple 'AAAA' records from Route53 (this should be impossible)");
-                        v6 = Some(rrs);
-                    }
-                    _ => {
-                        break;
-                    }
-                }
+    for rrs in response.resource_record_sets {
+        if &rrs.name != host_name {
+            break;
+        }
+        match rrs.r#type {
+            RrType::A => {
+                assert!(
+                    v4.is_none(),
+                    "received multiple 'A' records from Route53 (this should be impossible)"
+                );
+                v4 = Some(rrs);
+            }
+            RrType::Aaaa => {
+                assert!(
+                    v6.is_none(),
+                    "received multiple 'AAAA' records from Route53 (this should be impossible)"
+                );
+                v6 = Some(rrs);
+            }
+            _ => {
+                break;
             }
         }
-        Err(e) => {
-            return Err(e.to_string());
-        }
-    };
+    }
 
     Ok(AddressRecords { v4, v6 })
 }
@@ -189,26 +185,17 @@ fn _compare_add_to_change_set<IPTYPE>(
     current_address_records: &Option<ResourceRecordSet>,
     rr_type: RrType,
     changes: &mut Vec<Change>,
-) -> Result<(), String>
+) -> anyhow::Result<()>
 where
     IPTYPE: FromStr + Ord + Display,
     <IPTYPE as FromStr>::Err: Debug + Display,
 {
     if desired_addresses.is_empty() {
         if let Some(current) = &current_address_records {
-            let chg = match Change::builder()
+            let chg = Change::builder()
                 .set_action(Some(ChangeAction::Delete))
                 .set_resource_record_set(Some(current.clone()))
-                .build()
-            {
-                Ok(chg) => chg,
-                Err(e) => {
-                    return Err(format!(
-                        "error creating deletion change ({}): {e}",
-                        current.r#type().as_str()
-                    ));
-                }
-            };
+                .build()?;
             changes.push(chg);
         }
     } else if !current_address_records
@@ -217,39 +204,21 @@ where
     {
         let mut v = Vec::<ResourceRecord>::with_capacity(desired_addresses.len());
         for ip in desired_addresses.iter() {
-            let r = match ResourceRecord::builder()
+            let r = ResourceRecord::builder()
                 .set_value(Some(ip.to_string()))
-                .build()
-            {
-                Ok(rr) => rr,
-                Err(e) => {
-                    return Err(format!("error creating ResourceRecord: {e}"));
-                }
-            };
+                .build()?;
             v.push(r);
         }
-        let rrs = match ResourceRecordSet::builder()
+        let rrs = ResourceRecordSet::builder()
             .set_name(Some(config.host_name_normalized.to_owned()))
             .set_type(Some(rr_type))
             .set_ttl(Some(config.route53_record_ttl))
             .set_resource_records(Some(v))
-            .build()
-        {
-            Ok(rrs) => rrs,
-            Err(e) => {
-                return Err(format!("error creating ResourceRecordSet: {e}"));
-            }
-        };
-        let chg = match Change::builder()
+            .build()?;
+        let chg = Change::builder()
             .set_action(Some(ChangeAction::Upsert))
             .set_resource_record_set(Some(rrs))
-            .build()
-        {
-            Ok(chg) => chg,
-            Err(e) => {
-                return Err(format!("error creating change: {e}"));
-            }
-        };
+            .build()?;
         changes.push(chg);
     }
     Ok(())
@@ -266,7 +235,7 @@ pub async fn update_host_addresses_if_different(
     desired_addresses: &Addresses,
     current_address_records: &AddressRecords,
     do_update: bool,
-) -> Result<UpdateHostResult, String> {
+) -> anyhow::Result<UpdateHostResult> {
     let changes = {
         let mut changes = Vec::<Change>::new();
         _compare_add_to_change_set(
@@ -296,10 +265,7 @@ pub async fn update_host_addresses_if_different(
         .checked_add(config.update_timeout.to_owned())
         .expect("adding a duration to 'now' should always work");
 
-    let cb = match ChangeBatch::builder().set_changes(Some(changes)).build() {
-        Ok(cb) => cb,
-        Err(e) => return Err(format!("building change batch: {e}")),
-    };
+    let cb = ChangeBatch::builder().set_changes(Some(changes)).build()?;
     let change_fut = config
         .route53_client
         .change_resource_record_sets()
@@ -308,27 +274,8 @@ pub async fn update_host_addresses_if_different(
         .send();
     let timeout_fut = timeout(config.update_timeout.to_owned(), change_fut);
 
-    let timeout_output = match timeout_fut.await {
-        Ok(output) => output,
-        Err(_e) => return Err("Timed out waiting for response".to_owned()),
-    };
-    let change_output = match timeout_output {
-        Ok(output) => output,
-        Err(e) => {
-            match e.raw_response() {
-                Some(response) => {
-                    let msg = String::from_utf8_lossy(
-                        response.body().bytes().expect("non-streaming error body"),
-                    );
-                    error!("SDK returned error: {}", msg);
-                }
-                None => {
-                    error!("SDK returned error with empty body");
-                }
-            };
-            return Err(format!("change result: {e}"));
-        }
-    };
+    let timeout_output = timeout_fut.await?;
+    let change_output = timeout_output?;
 
     let mut ci = change_output
         .change_info
@@ -342,23 +289,19 @@ pub async fn update_host_addresses_if_different(
         let now = Instant::now();
         let time_elapsed = now - start_time;
         if config.update_timeout <= time_elapsed {
-            return Err("Timed out waiting for change to synchronize".to_owned());
+            return Err(anyhow!("timed out waiting for change to synchronize"));
         }
         let time_remaining = expiry_time - now;
 
         sleep(min(time_remaining, config.update_poll_interval)).await;
 
         debug!("Re-checking whether change is synchronized...");
-        let output = match config
+        let output = config
             .route53_client
             .get_change()
             .set_id(Some(ci.id))
             .send()
-            .await
-        {
-            Ok(output) => output,
-            Err(e) => return Err(format!("get change error: {e}")),
-        };
+            .await?;
         ci = output
             .change_info
             .expect("Change-lookups should return change-info")

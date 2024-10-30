@@ -1,24 +1,20 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
-use std::string::ToString;
 use std::sync::LazyLock;
 use std::time::Duration;
 use std::vec::Vec;
 
+use anyhow::anyhow;
 use igd_next::{search_gateway, SearchOptions};
 use log::debug;
 use netdev::{get_default_interface, Interface};
 use reqwest::{Client, ClientBuilder, Url};
-use tokio::task::{spawn_blocking, JoinError};
+use tokio::task::spawn_blocking;
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
-
-static WEB_CLIENT: LazyLock<Result<Client, String>> =
-    LazyLock::new(|| match ClientBuilder::new().build() {
-        Ok(client) => Ok(client),
-        Err(e) => Err(e.to_string()),
-    });
+static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
+    LazyLock::new(|| ClientBuilder::new().build());
 
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
 
@@ -98,41 +94,28 @@ async fn get_web_service_document(
     url: Url,
     url_string: &String,
     timeout: Duration,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     let request = client.get(url).timeout(timeout).send();
-
-    let response = match request.await {
-        Ok(r) => r,
-        Err(e) => return Err(format!("Failed to fetch from URL \"{url_string}\": {e}")),
-    };
+    let response = request.await?;
 
     if let Some(cl) = response.content_length() {
         if MAX_WEB_SERVICE_DOCUMENT_LENGTH < cl {
-            return Err(format!(
-                "Result body from URL \"{}\": Content-Length ({}) too large (max={})",
-                url_string, cl, MAX_WEB_SERVICE_DOCUMENT_LENGTH
+            return Err(anyhow!(
+                "url \"{}\": Content-Length ({}) too long (max={})",
+                url_string,
+                cl,
+                MAX_WEB_SERVICE_DOCUMENT_LENGTH
             ));
         }
     }
 
     // TODO: implement a maximum read size for a streaming response
-
-    let body = match response.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(format!(
-                "Failed to read result body from URL \"{url_string}\": {e}"
-            ))
-        }
-    };
+    let body = response.text().await?;
     Ok(body)
 }
 
-pub async fn get_default_public_ip_v4() -> Result<Vec<Ipv4Addr>, String> {
-    let default_interface = match &*DEFAULT_INTERFACE {
-        Ok(interface) => interface,
-        Err(e) => return Err(e.to_owned()),
-    };
+pub async fn get_default_public_ip_v4() -> anyhow::Result<Vec<Ipv4Addr>> {
+    let default_interface = (*DEFAULT_INTERFACE).as_ref().map_err(anyhow::Error::msg)?;
 
     let mut result = Vec::<Ipv4Addr>::new();
     for ip_net in &default_interface.ipv4 {
@@ -150,92 +133,58 @@ pub async fn get_default_public_ip_v4() -> Result<Vec<Ipv4Addr>, String> {
     Ok(result)
 }
 
-pub async fn get_igd_ip_v4(timeout: Duration) -> Result<Vec<Ipv4Addr>, String> {
+pub async fn get_igd_ip_v4(timeout: Duration) -> anyhow::Result<Vec<Ipv4Addr>> {
     // This algorithm blocks, so we spin it off into its own thread.
-    let thread_result: Result<Result<Vec<Ipv4Addr>, String>, JoinError> = spawn_blocking(move || {
+    spawn_blocking(move || {
         let search_option = SearchOptions {
             timeout: Some(timeout),
             ..Default::default()
         };
-        let gateway = match search_gateway(search_option) {
-            Ok(gw) => gw,
-            Err(e) => {
-                return Err(
-                    format!("Failed to find internet gateway: {e}")
+        let gateway = search_gateway(search_option)?;
+
+        let ip = gateway.get_external_ip()?;
+        if let IpAddr::V4(v4) = ip {
+            if ipv4_is_global(&v4) {
+                return Ok(vec![v4]);
+            } else {
+                debug!(
+                    "Ignoring address [{}] reported by internet gateway: address is non-global",
+                    v4
                 );
             }
-        };
-
-        match gateway.get_external_ip() {
-            Ok(ip) => {
-                if let IpAddr::V4(v4) = ip {
-                    if ipv4_is_global(&v4) {
-                        return Ok(vec![v4]);
-                    } else {
-                        debug!(
-                            "Ignoring address [{}] reported by internet gateway: address is non-global",
-                            v4
-                        );
-                    }
-                }
-                Ok(Vec::<Ipv4Addr>::new())
-            },
-            Err(e) => {
-                Err(
-                    format!("Failed to determine internet gateway external IP address: {e}")
-                )
-            }
         }
-    }).await;
-
-    match thread_result {
-        Ok(result) => result,
-        Err(e) => Err(format!(
-            "Error joining thread searching for internet gateway device: {e}"
-        )),
-    }
+        Ok(Vec::<Ipv4Addr>::new())
+    })
+    .await?
 }
 
 pub async fn get_web_service_ip_v4(
     url: Url,
     url_string: String,
     timeout: Duration,
-) -> Result<Vec<Ipv4Addr>, String> {
+) -> anyhow::Result<Vec<Ipv4Addr>> {
     let client = (*WEB_CLIENT).as_ref()?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
 
     let mut result = Vec::<Ipv4Addr>::new();
     for line in body.as_str().lines() {
-        match Ipv4Addr::from_str(line) {
-            Ok(ip) => {
-                if ipv4_is_global(&ip) {
-                    result.push(ip)
-                } else {
-                    debug!(
-                        "Ignoring address [{}] reported by web-service:{}: address is non-global",
-                        ip, url_string
-                    );
-                }
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Failed to parse result as IPv4 address: \"{}\": {}",
-                    line,
-                    e.to_string().as_str()
-                ))
-            }
+        let ip = Ipv4Addr::from_str(line)?;
+        if ipv4_is_global(&ip) {
+            result.push(ip)
+        } else {
+            debug!(
+                "Ignoring address [{}] reported by web-service:{}: address is non-global",
+                ip, url_string
+            );
         }
     }
 
     Ok(result)
 }
 
-pub async fn get_default_public_ip_v6() -> Result<Vec<Ipv6Addr>, String> {
-    let default_interface = match &*DEFAULT_INTERFACE {
-        Ok(interface) => interface,
-        Err(e) => return Err(e.to_owned()),
-    };
+pub async fn get_default_public_ip_v6() -> anyhow::Result<Vec<Ipv6Addr>> {
+    let default_interface = (*DEFAULT_INTERFACE).as_ref().map_err(anyhow::Error::msg)?;
 
     let mut result = Vec::<Ipv6Addr>::new();
     for ip_net in &default_interface.ipv6 {
@@ -257,31 +206,21 @@ pub async fn get_web_service_ip_v6(
     url: Url,
     url_string: String,
     timeout: Duration,
-) -> Result<Vec<Ipv6Addr>, String> {
+) -> anyhow::Result<Vec<Ipv6Addr>> {
     let client = (*WEB_CLIENT).as_ref()?;
 
     let body = get_web_service_document(client, url, &url_string, timeout).await?;
 
     let mut result = Vec::<Ipv6Addr>::new();
     for line in body.as_str().lines() {
-        match Ipv6Addr::from_str(line) {
-            Ok(ip) => {
-                if ipv6_is_global(&ip) {
-                    result.push(ip)
-                } else {
-                    debug!(
-                        "Ignoring address [{}] reported by web-service:{}: address is non-global",
-                        ip, url_string
-                    );
-                }
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Failed to parse result as IPv6 address: \"{}\": {}",
-                    line,
-                    e.to_string().as_str()
-                ))
-            }
+        let ip = Ipv6Addr::from_str(line)?;
+        if ipv6_is_global(&ip) {
+            result.push(ip)
+        } else {
+            debug!(
+                "Ignoring address [{}] reported by web-service:{}: address is non-global",
+                ip, url_string
+            );
         }
     }
 

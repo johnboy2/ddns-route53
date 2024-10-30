@@ -75,7 +75,7 @@ async fn main() {
         }
         Err(e) => {
             log_stdout.apply().expect("multiple loggers not allowed");
-            error!("{e}");
+            error!("{e:?}");
             return;
         }
     };
@@ -94,7 +94,7 @@ async fn main() {
         set.spawn_local(async move { arc_config.get_ipv6_addresses().await })
     };
 
-    let fut_r53_addresses: JoinHandle<Result<AddressRecords, String>> = {
+    let fut_r53_addresses: JoinHandle<anyhow::Result<AddressRecords>> = {
         let arc_config = arc_config.clone();
         set.spawn_local(async move {
             let config = arc_config.as_ref();
