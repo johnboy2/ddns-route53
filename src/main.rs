@@ -127,7 +127,6 @@ async fn main() {
     };
     debug!("Got route53: {:?}", addresses_route53);
 
-    debug!("Address mismatch: attempting route53 update...");
     match update_host_addresses_if_different(
         &arc_config,
         &addresses_current,
