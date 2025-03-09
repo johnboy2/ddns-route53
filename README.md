@@ -71,7 +71,7 @@ The following example shows how to create an IAM user with limited permissions u
         }
         ```
 
-        > The `"NormalizedRecordNames"` entry above should be changed to match the fully-qualified domain name of the record you want maintained.
+        > Replace `home.example.com` in the IAM policy above with the fully-qualified domain name of the record you want maintained.
 
         > The `"Resource"` entries above must be updated to give the "ARN" of your zone, which is comprised of `"arn:aws:route53:::hostedzone/"` followed by your zone ID. If your Zone ID is `Z12345` (for example), then its ARN is `"arn:aws:route53:::hostedzone/Z12345"` — so that's what you should put under the `"Resource"` sections of the IAM policy.
     1. Click "Next"
