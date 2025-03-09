@@ -149,7 +149,7 @@ where
                 );
                 return false;
             }
-        }
+        },
         None => {
             debug!(
                 "{log_prefix}: TTL mismatch (want={}, found=None)",
