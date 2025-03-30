@@ -332,7 +332,7 @@ fn parse_log_level(name: &Option<String>, default: LevelFilter) -> anyhow::Resul
 }
 
 fn validate_host_name(name: &str) -> anyhow::Result<()> {
-    let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](\\.[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
+    let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](?:\\.[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
         .expect("hard-coded regex should always be valid")
     ;
     if ptn.is_match(name) {
