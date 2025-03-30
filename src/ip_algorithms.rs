@@ -5,11 +5,14 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
+use encoding_rs::{Encoding, UTF_8};
 use igd_next::{search_gateway, SearchOptions};
 use log::{debug, trace};
+use mime::Mime;
 use netdev::{get_default_interface, Interface};
 use reqwest::{Client, ClientBuilder, Url};
 use tokio::task::spawn_blocking;
+use tokio_stream::StreamExt;
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
@@ -97,6 +100,7 @@ async fn get_web_service_document(
 ) -> anyhow::Result<String> {
     let request = client.get(url).timeout(timeout).send();
     let response = request.await.context("error fetching url")?;
+    let mut content_length: u64 = 0;
 
     if let Some(cl) = response.content_length() {
         if MAX_WEB_SERVICE_DOCUMENT_LENGTH < cl {
@@ -107,11 +111,52 @@ async fn get_web_service_document(
                 MAX_WEB_SERVICE_DOCUMENT_LENGTH
             ));
         }
+        content_length = cl;
     }
 
-    // TODO: implement a maximum read size for a streaming response
-    let body = response.text().await.context("error reading from url")?;
-    Ok(body)
+    // Stream the data back and decode it.
+
+    // Why not just use `response.text()`? We want this code to be able to run
+    // effectively even in low-memory environments or in the presence of
+    // possibly malicious web service hosts spewing back an unlimited amount of
+    // data. Streaming the content first (to ensure it isn't too large) is a
+    // reasonable mitigation.
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<Mime>().ok());
+    let encoding_name = content_type
+        .as_ref()
+        .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()))
+        .unwrap_or("utf-8");
+    let encoding = Encoding::for_label(encoding_name.as_bytes()).unwrap_or(UTF_8);
+    
+    let mut body_binary = Vec::<u8>::new();
+    if content_length != 0 {
+        body_binary.reserve(content_length as usize);
+    }
+    let mut stream = response.bytes_stream();
+    while let Some(item) = stream.next().await {
+        let item = item.context("error reading from stream")?;
+        body_binary.extend_from_slice(item.as_ref());
+        if MAX_WEB_SERVICE_DOCUMENT_LENGTH < (body_binary.len() as u64) {
+            return Err(anyhow!(
+                "url \"{}\": body length ({}) too long (max={})",
+                url_string,
+                body_binary.len(),
+                MAX_WEB_SERVICE_DOCUMENT_LENGTH
+            ));
+        }
+    }
+
+    // Undecodeable byte sequnces to get U+FFFD (replacement character). That's
+    // completely okay for us, since this function *should* only ever get back
+    // IP addresses (which are always ASCII -- and thus always decodeable). 
+    let (text, _, _) = encoding.decode(body_binary.as_slice());
+
+    Ok(text.into_owned())
 }
 
 pub async fn get_default_public_ip_v4() -> anyhow::Result<Vec<Ipv4Addr>> {
