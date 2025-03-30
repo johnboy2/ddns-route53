@@ -1,5 +1,7 @@
 use std::cmp::{min, Ord};
+use std::collections::HashSet;
 use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -137,7 +139,7 @@ fn _resource_record_set_matches_expected<IPTYPE>(
     log_prefix: &'static str,
 ) -> bool
 where
-    IPTYPE: FromStr + Ord,
+    IPTYPE: FromStr + Ord + Hash + Clone,
     <IPTYPE as FromStr>::Err: Debug,
 {
     match rrs.ttl {
@@ -182,21 +184,26 @@ where
         }
     }
 
-    let rrs_ips = {
-        let mut ips: Vec<IPTYPE> = rrs
-            .resource_records()
-            .iter()
-            .map(|rr| {
-                rr.value()
-                    .parse::<IPTYPE>()
-                    .expect("A/AAAA resource records should always parse as valid IP addresses")
-            })
-            .collect();
-        ips.sort();
-        ips
-    };
-    // TODO: This currently works because the two lists are always sorted; we should NOT depend on that convention
-    if &rrs_ips != desired_addresses {
+    let rrs_ips: HashSet<IPTYPE> =
+        rrs
+        .resource_records()
+        .iter()
+        .map(|rr| {
+            rr.value()
+                .parse::<IPTYPE>()
+                .expect("A/AAAA resource records should always parse as valid IP addresses")
+        })
+        .collect()
+    ;
+
+    let desired_ips: HashSet<IPTYPE> =
+        desired_addresses
+        .iter()
+        .map(|ip| ip.clone())
+        .collect()
+    ;
+
+    if rrs_ips != desired_ips {
         debug!("{log_prefix}: IP mismatch");
         return false;
     }
@@ -213,7 +220,7 @@ fn _compare_add_to_change_set<IPTYPE>(
     log_prefix: &'static str,
 ) -> anyhow::Result<()>
 where
-    IPTYPE: FromStr + Ord + Display,
+    IPTYPE: FromStr + Ord + Hash + Clone + Display,
     <IPTYPE as FromStr>::Err: Debug + Display,
 {
     if desired_addresses.is_empty() {
