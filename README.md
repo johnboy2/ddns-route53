@@ -1,10 +1,10 @@
 # ddns-route53
 
-`ddns-route53` is a utility for creating a dynamic DNS ("DDNS") solution for zones hosted by [AWS Route53](https://aws.amazon.com/route53/). Other hosting providers are **not supported**.
+`ddns-route53` is a utility for creating a _Dynamic DNS_ ("DDNS") solution for zones hosted by [AWS Route53](https://aws.amazon.com/route53/). Other hosting providers are **not supported**.
 
 ## Overview
 
-`ddns-route53` works by first attempting to identify the public IPv4 or IPv6 address it is running at, using several possible algorithms set in its configuration. Once its address(es) are determined, it compares the result with applicable resource records hosted in a [Route53](https://aws.amazon.com/route53/)-hosted zone and, if they differ, update the zone to match.
+`ddns-route53` works by first attempting to identify the public IPv4 or IPv6 address it is running at, using several possible algorithms set in its configuration. Once its address(es) are determined, it compares the result with the DNS resource records in a [Route53](https://aws.amazon.com/route53/)-hosted zone and, if they differ, update the zone to match.
 
 ## Building
 
@@ -22,16 +22,16 @@
 
 ## AWS configuration
 
-Querying and updating a [Route53](https://aws.amazon.com/route53/) zone requires an IAM identity with appropriate permissions.
+Querying and updating a [Route53](https://aws.amazon.com/route53/) zone requires an IAM identity with appropriate permissions. See the [AWS IAM documentation](https://docs.aws.amazon.com/iam/) for details.
 
-### Example Route53/IAM configuration
+### Example Route53/IAM playbook
 
-The following example shows how to create an IAM user with limited permissions use by `ddns-route53`.
+The following example shows one way to create an IAM user with limited permissions for exclusive use by `ddns-route53`.
 
  1. Determine the "Zone ID" for your [Route53](https://aws.amazon.com/route53/)-hosted DNS zone:
     1. Log into the [Route53 console](https://console.aws.amazon.com/iam/home) as a user with sufficient administrative rights.
     1. In the Dashboard, click on "Hosted zones".
-    1. Select the DNS zone for which you want a dynamic-DNS update.
+    1. Select the DNS zone for which you want Dynamic-DNS updates.
     1. Expand "Hosted zone details".
     1. Make note of the "Hosted zone ID" — you'll need it again later.
  1. Create an IAM user that can update the zone:
@@ -73,7 +73,7 @@ The following example shows how to create an IAM user with limited permissions u
 
         > Replace `home.example.com` in the IAM policy above with the fully-qualified domain name of the record you want maintained.
 
-        > The `"Resource"` entries above must be updated to give the "ARN" of your zone, which is comprised of `"arn:aws:route53:::hostedzone/"` followed by your zone ID. If your Zone ID is `Z12345` (for example), then its ARN is `"arn:aws:route53:::hostedzone/Z12345"` — so that's what you should put under the `"Resource"` sections of the IAM policy.
+        > The `"Resource"` entries above must be updated to give the "ARN" of your zone, which is comprised of `"arn:aws:route53:::hostedzone/"` followed by your zone ID. If your Zone ID is `Z12345` (for example), then its ARN is `"arn:aws:route53:::hostedzone/Z12345"` — so that's what you should put under the first two `"Resource"` sections of the IAM policy above.
     1. Click "Next"
     1. Set a suitable policy name; e.g. `DynamicDNS-home.example.com`
     1. Scroll down to the bottom and click "Create Policy"
@@ -86,7 +86,7 @@ The following example shows how to create an IAM user with limited permissions u
     1. Under "Permissions policies", enter the policy name you chose above; that will filter the list of available policies to just those containing the name you gave; find your policy, and place a checkmark in the box next to its name
     1. Click "Next"
     1. Click "Create user"
- 1. Create an access key for your IAM user
+ 1. Create an access key for your IAM user:
     1. Log into the [IAM console](https://console.aws.amazon.com/iam/home) as a user with sufficient administrative rights.
     1. In the Dashboard, find "Access Management" and click on "Users".
     1. Click on the user you created
@@ -100,15 +100,15 @@ The following example shows how to create an IAM user with limited permissions u
 
 ## Client configuration
 
-A template configuration file is available at [`example/ddns-route53.conf`](example/ddns-route53.conf). (It uses the [TOML](https://toml.io/en/) file format.)
+A template configuration file is available at [`example/ddns-route53.conf`](example/ddns-route53.conf). This file uses a [TOML](https://toml.io/en/)-based format. You should copy this file to another location and edit it to match your needs.
 
 At a minimum, you should set the following:
- * The `host_name` value
- * The `aws_route53_zone_id`
-   > This value is _technically_ optional, because `ddns-route53` can determine this dynamically; however that requires the extra `ListHostedZones` permission, which the example above omits.
- * You'll either need to specify the `aws_access_key_id` and `aws_secret_access_key` values for the IAM user you created, or else you'll need to [make them available to the local user under which you will run `ddns-route53`](https://docs.aws.amazon.com/sdkref/latest/guide/access-iam-users.html#stepauthIamUser). 
+ * The `host_name` value, which should be a fully-qualified domain name within a [Route53](https://aws.amazon.com/route53/)-hosted zone. 
+ * The `aws_route53_zone_id` of your zone.
+   > This value is _technically_ optional, because `ddns-route53` can determine this dynamically; however that requires the `ListHostedZones` permission (which the example above omits). See the [AWS IAM documentation](https://docs.aws.amazon.com/iam/) for help in adding this permission if desired.
+ * You'll either need to specify the `aws_access_key_id` and `aws_secret_access_key` values for the IAM user you created, or else you'll need to make them available to the local user under which you will run `ddns-route53` by following [standard AWS SDK credential practices](https://docs.aws.amazon.com/sdkref/latest/guide/access-iam-users.html#stepauthIamUser). 
 
-Various other configuration options exist; see [`example/ddns-route53.conf`](example/ddns-route53.conf) for more.
+Various other configuration options exist; see [`example/ddns-route53.conf`](example/ddns-route53.conf) for more information.
 
 ## Running
 
