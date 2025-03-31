@@ -132,7 +132,7 @@ async fn get_web_service_document(
         .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()))
         .unwrap_or("utf-8");
     let encoding = Encoding::for_label(encoding_name.as_bytes()).unwrap_or(UTF_8);
-    
+
     let mut body_binary = Vec::<u8>::new();
     if content_length != 0 {
         body_binary.reserve(content_length as usize);
@@ -153,7 +153,7 @@ async fn get_web_service_document(
 
     // Undecodeable byte sequnces to get U+FFFD (replacement character). That's
     // completely okay for us, since this function *should* only ever get back
-    // IP addresses (which are always ASCII -- and thus always decodeable). 
+    // IP addresses (which are always ASCII -- and thus always decodeable).
     let (text, _, _) = encoding.decode(body_binary.as_slice());
 
     Ok(text.into_owned())

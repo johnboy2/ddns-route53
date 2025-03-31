@@ -151,7 +151,7 @@ where
                 );
                 return false;
             }
-        },
+        }
         None => {
             debug!(
                 "{log_prefix}: TTL mismatch (want={}, found=None)",
@@ -184,8 +184,7 @@ where
         }
     }
 
-    let rrs_ips: HashSet<IPTYPE> =
-        rrs
+    let rrs_ips: HashSet<IPTYPE> = rrs
         .resource_records()
         .iter()
         .map(|rr| {
@@ -193,8 +192,7 @@ where
                 .parse::<IPTYPE>()
                 .expect("A/AAAA resource records should always parse as valid IP addresses")
         })
-        .collect()
-    ;
+        .collect();
 
     if &rrs_ips != desired_addresses {
         debug!("{log_prefix}: IP mismatch");
