@@ -434,19 +434,18 @@ impl Config {
         }
     }
 
-    pub async fn get_ipv4_addresses(&self) -> Vec<Ipv4Addr> {
+    pub async fn get_ipv4_addresses(&self) -> HashSet<Ipv4Addr> {
         for (name, algo_fn) in self.ipv4_algorithms.iter().zip(self.ipv4_algo_fns.iter()) {
             debug!("ipv4: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
             match algo_result {
-                Ok(mut ips) => {
+                Ok(ips) => {
                     debug!("ipv4: got addresses: {:?}", &ips);
                     if ips.is_empty() {
                         debug!("ipv4: skipping empty result for algorithm: {}", name);
                     } else {
-                        ips.sort();
                         debug!("ipv4: return {} found address(es)", ips.len());
-                        return ips;
+                        return ips.iter().copied().collect();
                     }
                 }
                 Err(msg) => {
@@ -456,22 +455,21 @@ impl Config {
         }
 
         warn!("ipv4: none of the configured algorithms found any results; returning empty-set.");
-        Vec::<Ipv4Addr>::new()
+        HashSet::<Ipv4Addr>::new()
     }
 
-    pub async fn get_ipv6_addresses(&self) -> Vec<Ipv6Addr> {
+    pub async fn get_ipv6_addresses(&self) -> HashSet<Ipv6Addr> {
         for (name, algo_fn) in self.ipv6_algorithms.iter().zip(self.ipv6_algo_fns.iter()) {
             debug!("ipv6: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
             match algo_result {
-                Ok(mut ips) => {
+                Ok(ips) => {
                     debug!("ipv6: got addresses: {:?}", &ips);
                     if ips.is_empty() {
                         debug!("ipv6: skipping empty result for algorithm: {}", name);
                     } else {
-                        ips.sort();
                         debug!("ipv6: return {} found address(es)", ips.len());
-                        return ips;
+                        return ips.iter().copied().collect();
                     }
                 }
                 Err(msg) => {
@@ -481,6 +479,6 @@ impl Config {
         }
 
         warn!("ipv6: none of the configured algorithms found any results; returning empty-set.");
-        Vec::<Ipv6Addr>::new()
+        HashSet::<Ipv6Addr>::new()
     }
 }

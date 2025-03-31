@@ -135,7 +135,7 @@ pub async fn get_resource_records(
 fn _resource_record_set_matches_expected<IPTYPE>(
     rrs: &ResourceRecordSet,
     config: &Config,
-    desired_addresses: &Vec<IPTYPE>,
+    desired_addresses: &HashSet<IPTYPE>,
     log_prefix: &'static str,
 ) -> bool
 where
@@ -196,14 +196,7 @@ where
         .collect()
     ;
 
-    let desired_ips: HashSet<IPTYPE> =
-        desired_addresses
-        .iter()
-        .map(|ip| ip.clone())
-        .collect()
-    ;
-
-    if rrs_ips != desired_ips {
+    if &rrs_ips != desired_addresses {
         debug!("{log_prefix}: IP mismatch");
         return false;
     }
@@ -213,7 +206,7 @@ where
 
 fn _compare_add_to_change_set<IPTYPE>(
     config: &Config,
-    desired_addresses: &Vec<IPTYPE>,
+    desired_addresses: &HashSet<IPTYPE>,
     current_address_records: &Option<ResourceRecordSet>,
     rr_type: RrType,
     changes: &mut Vec<Change>,

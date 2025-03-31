@@ -1,12 +1,12 @@
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::vec::Vec;
 
 use aws_sdk_route53::types::ResourceRecordSet;
 
 #[derive(Debug)]
 pub struct Addresses {
-    pub v4: Vec<Ipv4Addr>,
-    pub v6: Vec<Ipv6Addr>,
+    pub v4: HashSet<Ipv4Addr>,
+    pub v6: HashSet<Ipv6Addr>,
 }
 
 // TODO: Consider writing your own fmt::Debutg impl for this, which doesn't emit any of the 'None' value from the ResourceRecordSet object.
