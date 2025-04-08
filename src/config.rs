@@ -16,7 +16,7 @@ use lazy_format::lazy_format;
 use log::{debug, warn, LevelFilter};
 use regex::Regex;
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ip_algorithms::StringOrStringVec;
 
@@ -31,8 +31,7 @@ static MAX_CONFIG_FILE_SIZE: u64 = 65536;
 static MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
 static MAX_UPDATE_TIMEOUT_SECONDS: f64 = 3600.0;
 
-
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "type")]
 enum AlgorithmSpecificationV4 {
     #[serde(rename = "default_public_ip")]
@@ -51,10 +50,10 @@ enum AlgorithmSpecificationV4 {
     Plugin {
         command: StringOrStringVec,
         timeout_seconds: Option<f64>,
-    }
+    },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "type")]
 enum AlgorithmSpecificationV6 {
     #[serde(rename = "default_public_ip")]
@@ -70,7 +69,7 @@ enum AlgorithmSpecificationV6 {
     Plugin {
         command: StringOrStringVec,
         timeout_seconds: Option<f64>,
-    }
+    },
 }
 
 #[derive(Deserialize)]
@@ -174,11 +173,11 @@ pub struct Config {
 
     #[derivative(Debug = "ignore")]
     ipv4_algo_fns: Vec<Box<V4AlgoFn>>,
-    ipv4_algorithms: Vec<String>,
+    ipv4_algo_descs: Vec<String>,
 
     #[derivative(Debug = "ignore")]
     ipv6_algo_fns: Vec<Box<V6AlgoFn>>,
-    ipv6_algorithms: Vec<String>,
+    ipv6_algo_descs: Vec<String>,
 
     pub route53_client: ::aws_sdk_route53::Client,
     pub route53_zone_id: String,
@@ -207,7 +206,6 @@ fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoRe
                     return Err(anyhow!("ipv4:{name} can only be given once"));
                 }
                 have_default = true;
-                descriptions.push(format!("{{type=\"{name}\"}}"));
                 functions.push(Box::new(|| {
                     Box::pin(crate::ip_algorithms::get_default_public_ip_v4())
                 }));
@@ -218,16 +216,10 @@ fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoRe
                     return Err(anyhow!("ipv4:{name} can only be given once"));
                 }
                 have_igd = true;
-                let mut description = format!("{{type=\"{name}\"");
                 let timeout = match timeout_seconds {
-                    Some(timeout_secs) => {
-                        description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        check_timeout(*timeout_secs, None)?
-                    }
+                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
-                description += "}";
-                descriptions.push(description);
                 functions.push(Box::new(move || {
                     Box::pin(crate::ip_algorithms::get_igd_ip_v4(timeout))
                 }));
@@ -240,19 +232,13 @@ fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoRe
                 if !have_web_service_url.insert(url.as_str()) {
                     return Err(anyhow!("ipv4:{name} can only be given once"));
                 }
-                let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed =
                     Url::parse(url).context(format!("could not parse url: \"{url}\""))?;
                 let url_owned = url.to_owned();
                 let timeout = match timeout_seconds {
-                    Some(timeout_secs) => {
-                        description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        check_timeout(*timeout_secs, None)?
-                    }
+                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
-                description += "}";
-                descriptions.push(description);
                 functions.push(Box::new(move || {
                     Box::pin(crate::ip_algorithms::get_web_service_ip_v4(
                         url_parsed.to_owned(),
@@ -261,27 +247,25 @@ fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoRe
                     ))
                 }))
             }
-            AlgorithmSpecificationV4::Plugin { 
+            AlgorithmSpecificationV4::Plugin {
                 command,
-                timeout_seconds 
+                timeout_seconds,
             } => {
-                let mut description = format!("{{type=\"plugin\", command=");
-                description += serde_json::to_string(command).expect("failed to serialize command").as_ref();
                 let timeout = match timeout_seconds {
-                    Some(timeout_secs) => {
-                        description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        check_timeout(*timeout_secs, None)?
-                    }
+                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
-                description += "}";
-                descriptions.push(description);
                 let command = command.to_owned();
                 functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_plugin_ip_v4(command.clone(), timeout))
+                    Box::pin(crate::ip_algorithms::get_plugin_ip_v4(
+                        command.clone(),
+                        timeout,
+                    ))
                 }))
             }
         };
+
+        descriptions.push(serde_json::to_string(spec)?);
     }
 
     Ok(V4AlgoResult {
@@ -308,7 +292,6 @@ fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoRe
                     return Err(anyhow!("ipv6:{name} can only be given once"));
                 }
                 have_default = true;
-                descriptions.push(format!("{{type=\"{name}\"}}"));
                 functions.push(Box::new(|| {
                     Box::pin(crate::ip_algorithms::get_default_public_ip_v6())
                 }));
@@ -321,19 +304,13 @@ fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoRe
                 if !have_web_service_url.insert(url.as_str()) {
                     return Err(anyhow!("ipv6:{name} can only be given once"));
                 }
-                let mut description = format!("{{type=\"web_service\", url=\"{url}\"");
                 let url_parsed =
                     Url::parse(url).context(format!("could not parse url: \"{url}\""))?;
                 let url_owned = url.to_owned();
                 let timeout = match timeout_seconds {
-                    Some(timeout_secs) => {
-                        description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        check_timeout(*timeout_secs, None)?
-                    }
+                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
-                description += "}";
-                descriptions.push(description);
                 functions.push(Box::new(move || {
                     Box::pin(crate::ip_algorithms::get_web_service_ip_v6(
                         url_parsed.to_owned(),
@@ -342,27 +319,25 @@ fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoRe
                     ))
                 }))
             }
-            AlgorithmSpecificationV6::Plugin { 
+            AlgorithmSpecificationV6::Plugin {
                 command,
-                timeout_seconds 
+                timeout_seconds,
             } => {
-                let mut description = format!("{{type=\"plugin\", command=");
-                description += serde_json::to_string(command).expect("failed to serialize command").as_ref();
                 let timeout = match timeout_seconds {
-                    Some(timeout_secs) => {
-                        description += format!(", timeout_seconds={timeout_secs}").as_str();
-                        check_timeout(*timeout_secs, None)?
-                    }
+                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
                     None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
                 };
-                description += "}";
-                descriptions.push(description);
                 let command = command.to_owned();
                 functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_plugin_ip_v6(command.clone(), timeout))
+                    Box::pin(crate::ip_algorithms::get_plugin_ip_v6(
+                        command.clone(),
+                        timeout,
+                    ))
                 }))
             }
         };
+
+        descriptions.push(serde_json::to_string(spec)?);
     }
 
     Ok(V6AlgoResult {
@@ -443,9 +418,9 @@ impl Config {
                 Some(MAX_UPDATE_TIMEOUT_SECONDS),
             )
             .context("config: invalid \"update_timeout_seconds\"")?,
-            ipv4_algorithms: v4_algos.descriptions,
+            ipv4_algo_descs: v4_algos.descriptions,
             ipv4_algo_fns: v4_algos.functions,
-            ipv6_algorithms: v6_algos.descriptions,
+            ipv6_algo_descs: v6_algos.descriptions,
             ipv6_algo_fns: v6_algos.functions,
             route53_client: client,
             route53_zone_id: zone_id,
@@ -490,7 +465,7 @@ impl Config {
     }
 
     pub async fn get_ipv4_addresses(&self) -> HashSet<Ipv4Addr> {
-        for (name, algo_fn) in self.ipv4_algorithms.iter().zip(self.ipv4_algo_fns.iter()) {
+        for (name, algo_fn) in self.ipv4_algo_descs.iter().zip(self.ipv4_algo_fns.iter()) {
             debug!("ipv4: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
             match algo_result {
@@ -514,7 +489,7 @@ impl Config {
     }
 
     pub async fn get_ipv6_addresses(&self) -> HashSet<Ipv6Addr> {
-        for (name, algo_fn) in self.ipv6_algorithms.iter().zip(self.ipv6_algo_fns.iter()) {
+        for (name, algo_fn) in self.ipv6_algo_descs.iter().zip(self.ipv6_algo_fns.iter()) {
             debug!("ipv6: Trying algorithm: {}", name);
             let algo_result = algo_fn().await;
             match algo_result {
