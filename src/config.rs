@@ -393,6 +393,13 @@ impl Config {
         let v4_algos = build_v4_algos(&config_file.ipv4_algorithms)?;
         let v6_algos = build_v6_algos(&config_file.ipv6_algorithms)?;
 
+        if config_file.aws_access_key_id.is_some() != config_file.aws_secret_access_key.is_some() {
+            return Err(anyhow!("config 'aws_access_key_id' and 'aws_secret_access_key' must both be either present or absent"));
+        }
+        if config_file.aws_access_key_id.is_some() && config_file.aws_profile.is_some() {
+            return Err(anyhow!("config cannot use 'aws_profile' with 'aws_access_key_id'"));
+        }
+
         let client = crate::aws_route53::get_client(
             &config_file.aws_profile,
             &config_file.aws_access_key_id,
