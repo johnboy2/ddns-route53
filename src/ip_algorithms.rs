@@ -27,6 +27,7 @@ static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
 
 // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
+// (The std::net::Ipv4Addr.is_global() function requires an unstable std library; hence we made our own instead.)
 fn ipv4_is_global(ip: &Ipv4Addr) -> bool {
     !(ip.octets()[0] == 0 // "This network"
     || ip.is_private()
@@ -55,6 +56,7 @@ fn ipv4_is_global(ip: &Ipv4Addr) -> bool {
 }
 
 // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
+// (The std::net::Ipv6Addr.is_global() function requires an unstable std library; hence we made our own instead.)
 fn ipv6_is_global(ip: &Ipv6Addr) -> bool {
     !(ip.is_unspecified()
     || ip.is_loopback()

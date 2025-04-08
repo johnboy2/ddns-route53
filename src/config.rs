@@ -110,18 +110,19 @@ fn check_bounded_integer(
     value: i64,
     minimum: Option<i64>,
     maximum: Option<i64>,
+    description: &str,
 ) -> anyhow::Result<i64> {
     if let Some(min) = minimum {
         if let Some(max) = maximum {
             if value < min || max < value {
-                return Err(anyhow!("value must be in range {min}-{max}: {value}"));
+                return Err(anyhow!("{description} must be in range {min}-{max}: {value}"));
             }
         } else if value < min {
-            return Err(anyhow!("value cannot be less than {min}: {value}"));
+            return Err(anyhow!("{description} cannot be less than {min}: {value}"));
         }
     } else if let Some(max) = maximum {
         if max < value {
-            return Err(anyhow!("value cannot be greater than {max}: {value}"));
+            return Err(anyhow!("{description} cannot be greater than {max}: {value}"));
         }
     } else {
         panic!("check_bounded_integer must be called with at least one of minimum or maximum");
@@ -361,7 +362,7 @@ fn parse_log_level(name: &Option<String>, default: LevelFilter) -> anyhow::Resul
     }
 }
 
-fn validate_host_name(name: &str) -> anyhow::Result<()> {
+fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
     let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](?:\\.[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
         .expect("hard-coded regex should always be valid")
     ;
@@ -382,7 +383,7 @@ impl Config {
                     .map(|s| s.into_owned())
                     .context("invalid hostname")?;
 
-            validate_host_name(name_lower_idna.as_str()).context("invalid hostname")?;
+            validate_idna_host_name(name_lower_idna.as_str()).context("invalid hostname")?;
             if !name_lower_idna.ends_with(".") {
                 name_lower_idna += ".";
             }
@@ -428,6 +429,7 @@ impl Config {
                 config_file.aws_route53_record_ttl,
                 Some(0i64),
                 Some(2147483647i64),
+                "aws_route53_record_ttl",
             )
             .context("config: invalid \"aws_route53_record_ttl\"")?,
             log_file: config_file.log_file,

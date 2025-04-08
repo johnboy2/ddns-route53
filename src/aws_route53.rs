@@ -52,18 +52,18 @@ pub async fn get_client(
 }
 
 fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
-    let domain = domain.to_lowercase();
+    let domain_lowercase = domain.to_lowercase();
 
-    if host_lowercase == domain {
+    if host_lowercase == domain_lowercase {
         return true;
     }
-    if host_lowercase.ends_with(domain.as_str()) {
+    if host_lowercase.ends_with(domain_lowercase.as_str()) {
         // While this would match "host.domain.com" in "domain.com" (which we want),
         // it would also match "mydomain.com" against "domain.com" (which we don't want).
-        // So we must check that whatever precedes the domain in the host is a period.
-        let host = host_lowercase.as_bytes();
-        let domain = domain.as_bytes();
-        let maybe_separator = host[host.len() - domain.len() - 1];
+        // So we must check that a dot ('.') immediately precedes the domain portion.
+        let host_lc_bytes = host_lowercase.as_bytes();
+        let domain_lc_bytes = domain_lowercase.as_bytes();
+        let maybe_separator = host_lc_bytes[host_lc_bytes.len() - domain_lc_bytes.len() - 1];
         if maybe_separator == b'.' {
             return true;
         }
@@ -72,18 +72,18 @@ fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
     false
 }
 
-pub async fn get_zone_id(client: &Client, host_name: &str) -> anyhow::Result<String> {
+pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::Result<String> {
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
         let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
-            if host_is_in_domain(host_name, zone.name()) {
+            if host_is_in_domain(host_name_lowercase, zone.name()) {
                 return Ok(zone.id.to_owned());
             }
         }
     }
 
-    Err(anyhow!("zone not found: \"{host_name}\""))
+    Err(anyhow!("zone not found: \"{host_name_lowercase}\""))
 }
 
 pub async fn get_resource_records(
@@ -214,6 +214,8 @@ where
     IPTYPE: FromStr + Ord + Hash + Clone + Display,
     <IPTYPE as FromStr>::Err: Debug + Display,
 {
+    let mut changes_added = false;
+
     if desired_addresses.is_empty() {
         if let Some(current) = &current_address_records {
             debug!("{log_prefix}: adding DELETE");
@@ -223,8 +225,7 @@ where
                 .build()
                 .context("error building Route53:Change (deletion) object")?;
             changes.push(chg);
-        } else {
-            debug!("{log_prefix}: no changes required");
+            changes_added = true;
         }
     } else if !current_address_records.as_ref().is_some_and(|rrs| {
         _resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix)
@@ -251,7 +252,10 @@ where
             .build()
             .context("error building Route53:Change (upsert) object")?;
         changes.push(chg);
-    } else {
+        changes_added = true;
+    }
+
+    if !changes_added {
         debug!("{log_prefix}: no changes required");
     }
     Ok(())
@@ -279,7 +283,7 @@ pub async fn update_host_addresses_if_different(
             &mut changes,
             "ipv4",
         )
-        .context("determining ipv4-specific changes")?;
+        .context("error determining ipv4-specific changes")?;
         _compare_add_to_change_set(
             config,
             &desired_addresses.v6,
@@ -320,11 +324,7 @@ pub async fn update_host_addresses_if_different(
     let mut ci = change_output
         .change_info
         .expect("Change-responses should include change-info");
-    loop {
-        if ci.status == ChangeStatus::Insync {
-            return Ok(UpdateHostResult::UpdateSuccessful);
-        }
-
+    while ci.status != ChangeStatus::Insync {
         debug!("Change is not yet synchronized.");
         let now = Instant::now();
         let time_elapsed = now - start_time;
@@ -347,4 +347,6 @@ pub async fn update_host_addresses_if_different(
             .change_info
             .expect("Change-lookups should return change-info")
     }
+
+    return Ok(UpdateHostResult::UpdateSuccessful);
 }

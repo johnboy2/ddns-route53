@@ -83,20 +83,20 @@ async fn main() {
     trace!("{:?}", config);
     let arc_config = Rc::new(config);
 
-    let set = LocalSet::new();
+    let local_set = LocalSet::new();
 
     let fut_ipv4 = {
         let arc_config = arc_config.clone();
-        set.spawn_local(async move { arc_config.get_ipv4_addresses().await })
+        local_set.spawn_local(async move { arc_config.get_ipv4_addresses().await })
     };
     let fut_ipv6 = {
         let arc_config = arc_config.clone();
-        set.spawn_local(async move { arc_config.get_ipv6_addresses().await })
+        local_set.spawn_local(async move { arc_config.get_ipv6_addresses().await })
     };
 
     let fut_r53_addresses: JoinHandle<anyhow::Result<AddressRecords>> = {
         let arc_config = arc_config.clone();
-        set.spawn_local(async move {
+        local_set.spawn_local(async move {
             let config = arc_config.as_ref();
             get_resource_records(
                 &config.route53_client,
@@ -107,7 +107,7 @@ async fn main() {
         })
     };
 
-    set.await;
+    local_set.await;
 
     let addresses_current = Addresses {
         v4: fut_ipv4.await.expect("future-join should not panic"),

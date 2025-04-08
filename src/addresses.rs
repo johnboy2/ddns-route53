@@ -9,7 +9,7 @@ pub struct Addresses {
     pub v6: HashSet<Ipv6Addr>,
 }
 
-// TODO: Consider writing your own fmt::Debutg impl for this, which doesn't emit any of the 'None' value from the ResourceRecordSet object.
+// TODO: Consider writing your own fmt::Debug impl for this, which doesn't emit any of the 'None' value from the ResourceRecordSet object.
 //       That would be helpful, because there are more such 'None' values that non-None ones -- leading to cleaner output.
 #[derive(Debug)]
 pub struct AddressRecords {
