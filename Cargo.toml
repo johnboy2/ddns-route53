@@ -28,7 +28,8 @@ netdev = "0.33"
 regex = "1.11"
 reqwest = { version = "0.12", features = ["json","stream"] }
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1", features = ["macros","rt"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros","process","rt","time"] }
 tokio-stream = "0.1.17"
 toml = "0.8"
 

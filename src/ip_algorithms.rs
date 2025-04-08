@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -7,11 +8,15 @@ use std::vec::Vec;
 use anyhow::{anyhow, Context};
 use encoding_rs::{Encoding, UTF_8};
 use igd_next::{search_gateway, SearchOptions};
-use log::{debug, trace};
+use log::{debug, error, trace};
 use mime::Mime;
 use netdev::{get_default_interface, Interface};
 use reqwest::{Client, ClientBuilder, Url};
+use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 use tokio::task::spawn_blocking;
+use tokio::time::sleep;
 use tokio_stream::StreamExt;
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
@@ -159,6 +164,167 @@ async fn get_web_service_document(
     Ok(text.into_owned())
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum StringOrStringVec {
+    String(String),
+    Vec(Vec<String>),
+}
+
+pub async fn get_plugin_output(
+    command: StringOrStringVec,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let mut command_obj: Command;
+
+    match command {
+        StringOrStringVec::String(s) => {
+            if s.len() == 0 {
+                return Err(anyhow!("command cannot be empty"));
+            }
+            #[cfg(windows)]
+            {
+                let shell =
+                    std::env::var_os("ComSpec").unwrap_or(std::ffi::OsString::from("cmd.exe"));
+                command_obj = Command::new(shell);
+                command_obj.arg("/C");
+                command_obj.raw_arg(std::ffi::OsString::from(s));
+            }
+            #[cfg(unix)]
+            {
+                let shell =
+                    std::env::var_os("SHELL").unwrap_or(std::ffi::OsString::from("/bin/sh"));
+                command_obj = Command::new(shell);
+                command_obj.arg("-c");
+                command_obj.arg(s);
+            }
+            // TODO: Are there any other platforms with a different way to invoke a shell command?
+            #[cfg(not(any(windows, unix)))]
+            {
+                // Ultimate fall-back: Just run the string as-is. (If this is ever "wrong", the
+                // caller can always specify using the list syntax instead, or file a bug report.)
+                command_obj = Command::new(s);
+            }
+        }
+        StringOrStringVec::Vec(v) => {
+            if v.len() == 0 {
+                return Err(anyhow!("command cannot be empty"));
+            }
+            command_obj = Command::new(&v[0]);
+            command_obj.args(&v[1..]);
+        }
+    }
+    command_obj.stdout(Stdio::piped());
+    #[cfg(windows)]
+    {
+        command_obj.creation_flags = 0x08000000; // CREATE_NO_WINDOW
+    }
+
+    let mut child = command_obj.spawn().expect("plugin failed to start");
+    drop(child.stdin.take());
+
+    let mut stdout = child.stdout.take().expect("failed to unwrap stdout pipe");
+    let read_stdout_fut = tokio::spawn(async move {
+        let mut buff = Vec::new();
+        let _ = stdout.read_to_end(&mut buff).await;
+        buff
+    });
+
+    let mut succeeded = true;
+    tokio::select! {
+        es = child.wait() => {
+            let child_exit_status = es.expect("failed to unwrap exit status");
+            if let Some(code) = child_exit_status.code() {
+                if code == 0 {
+                    debug!("plugin exitted with RC={code}");
+                }
+                else {
+                    error!("plugin exitted with RC={code}");
+                    succeeded = false;
+                }
+            }
+            else {
+                error!("plugin exitted abnormally");
+                succeeded = false;
+            }
+        }
+        _ = sleep(timeout) => {
+            drop(read_stdout_fut);
+            child.kill().await.expect("failed to kill child after timeout");
+            return Err(anyhow!("plugin timed out"));
+        }
+    }
+
+    let stdout_content = read_stdout_fut
+        .await
+        .expect("failed to unwrap stdout buffer content");
+
+    fn try_read_data_as_text(data: &[u8]) -> Option<String> {
+        if let Ok(r) = std::str::from_utf8(data) {
+            // UTF-8 BOM can be ignored (if present)
+            return Some(r.strip_prefix("\u{FEFF}").unwrap_or(r).to_owned());
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows programs' stdout have very little in the way of standards for their text
+            // output, and can be UTF-8, UTF-16, ANSI code pages, or really anything at all. Since
+            // we expect IP address output (which only requires ASCII characters), UTF-8 and code
+            // page output would both parse the same -- if that's what we got. If we got past that
+            // point without matching, then the data is most likely some form of UTF-16.
+            if data.len() & 1 == 0 {
+                // Even (not odd) number of characters
+                if data.len() >= 2 {
+                    if data[..2] == b"\xFF\xFE" {
+                        // Found a UTF16 BOM; try to read everything after it.
+                        if let Ok(r) = String::from_utf16_le(data[2..]) {
+                            return Some(r);
+                        }
+                    } else if data[..2] == b"\xFE\xFF" {
+                        // Found a UTF16 BOM; try to read everything after it.
+                        if let Ok(r) = String::from_utf16_be(data[2..]) {
+                            return Some(r);
+                        }
+                    }
+                }
+                if let Ok(r) = String::from_utf16(data) {
+                    return Some(r);
+                }
+            }
+        }
+
+        None
+    }
+
+    if let Some(stdout) = try_read_data_as_text(stdout_content.as_slice()) {
+        debug!("plugin output: \"{stdout}\"");
+        if succeeded {
+            Ok(stdout)
+        } else {
+            Err(anyhow!("plugin failed"))
+        }
+    } else {
+        // For troubleshooting purposes, we should still log what we got -- even though it was
+        // undecodeable. So log it as hex-encoded bytes.
+        let mut data_hex_bytes = String::with_capacity(stdout_content.len() * 2);
+        fn to_hex(ch: u8) -> char {
+            let result_u8 = if ch < 10 {
+                ch + ('0' as u8)
+            } else {
+                ch + ('A' as u8) - 10u8
+            };
+            let result_ch = result_u8 as char;
+            return result_ch;
+        }
+        for ch in stdout_content.iter() {
+            data_hex_bytes.push(to_hex(ch >> 4));
+            data_hex_bytes.push(to_hex(ch & 0x0F));
+        }
+        error!("plugin output could not be decoded; value: 0x{data_hex_bytes}");
+        Err(anyhow!("failed to decode plugin output"))
+    }
+}
+
 pub async fn get_default_public_ip_v4() -> anyhow::Result<Vec<Ipv4Addr>> {
     let default_interface = (*DEFAULT_INTERFACE)
         .as_ref()
@@ -237,6 +403,25 @@ pub async fn get_web_service_ip_v4(
     Ok(result)
 }
 
+pub async fn get_plugin_ip_v4(
+    command: StringOrStringVec,
+    timeout: Duration,
+) -> anyhow::Result<Vec<Ipv4Addr>> {
+    let output = get_plugin_output(command, timeout).await?;
+
+    let mut result = Vec::<Ipv4Addr>::new();
+    for line in output.as_str().lines() {
+        let ip = Ipv4Addr::from_str(line).context("failed to parse IPv4 address from plugin")?;
+        if ipv4_is_global(&ip) {
+            result.push(ip);
+        } else {
+            debug!("Ignoring address [{ip}] reported by plugin: address is non-global");
+        }
+    }
+
+    Ok(result)
+}
+
 pub async fn get_default_public_ip_v6() -> anyhow::Result<Vec<Ipv6Addr>> {
     let default_interface = (*DEFAULT_INTERFACE)
         .as_ref()
@@ -282,6 +467,25 @@ pub async fn get_web_service_ip_v6(
                 "Ignoring address [{}] reported by web-service:{}: address is non-global",
                 ip, url_string
             );
+        }
+    }
+
+    Ok(result)
+}
+
+pub async fn get_plugin_ip_v6(
+    command: StringOrStringVec,
+    timeout: Duration,
+) -> anyhow::Result<Vec<Ipv6Addr>> {
+    let output = get_plugin_output(command, timeout).await?;
+
+    let mut result = Vec::<Ipv6Addr>::new();
+    for line in output.as_str().lines() {
+        let ip = Ipv6Addr::from_str(line).context("failed to parse IPv6 address from plugin")?;
+        if ipv6_is_global(&ip) {
+            result.push(ip);
+        } else {
+            debug!("Ignoring address [{ip}] reported by plugin: address is non-global");
         }
     }
 

@@ -18,6 +18,8 @@ use regex::Regex;
 use reqwest::Url;
 use serde::Deserialize;
 
+use crate::ip_algorithms::StringOrStringVec;
+
 static DEFAULT_ALGO_TIMEOUT_SECONDS: f64 = 10.0;
 fn default_update_poll_seconds() -> f64 {
     30.0
@@ -28,6 +30,7 @@ fn default_update_timeout_seconds() -> f64 {
 static MAX_CONFIG_FILE_SIZE: u64 = 65536;
 static MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
 static MAX_UPDATE_TIMEOUT_SECONDS: f64 = 3600.0;
+
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
@@ -43,6 +46,12 @@ enum AlgorithmSpecificationV4 {
         url: String,
         timeout_seconds: Option<f64>,
     },
+
+    #[serde(rename = "plugin")]
+    Plugin {
+        command: StringOrStringVec,
+        timeout_seconds: Option<f64>,
+    }
 }
 
 #[derive(Deserialize)]
@@ -56,6 +65,12 @@ enum AlgorithmSpecificationV6 {
         url: String,
         timeout_seconds: Option<f64>,
     },
+
+    #[serde(rename = "plugin")]
+    Plugin {
+        command: StringOrStringVec,
+        timeout_seconds: Option<f64>,
+    }
 }
 
 #[derive(Deserialize)]
@@ -246,6 +261,26 @@ fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoRe
                     ))
                 }))
             }
+            AlgorithmSpecificationV4::Plugin { 
+                command,
+                timeout_seconds 
+            } => {
+                let mut description = format!("{{type=\"plugin\", command=");
+                description += serde_json::to_string(command).expect("failed to serialize command").as_ref();
+                let timeout = match timeout_seconds {
+                    Some(timeout_secs) => {
+                        description += format!(", timeout_seconds={timeout_secs}").as_str();
+                        check_timeout(*timeout_secs, None)?
+                    }
+                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
+                };
+                description += "}";
+                descriptions.push(description);
+                let command = command.to_owned();
+                functions.push(Box::new(move || {
+                    Box::pin(crate::ip_algorithms::get_plugin_ip_v4(command.clone(), timeout))
+                }))
+            }
         };
     }
 
@@ -305,6 +340,26 @@ fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoRe
                         url_owned.to_owned(),
                         timeout,
                     ))
+                }))
+            }
+            AlgorithmSpecificationV6::Plugin { 
+                command,
+                timeout_seconds 
+            } => {
+                let mut description = format!("{{type=\"plugin\", command=");
+                description += serde_json::to_string(command).expect("failed to serialize command").as_ref();
+                let timeout = match timeout_seconds {
+                    Some(timeout_secs) => {
+                        description += format!(", timeout_seconds={timeout_secs}").as_str();
+                        check_timeout(*timeout_secs, None)?
+                    }
+                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
+                };
+                description += "}";
+                descriptions.push(description);
+                let command = command.to_owned();
+                functions.push(Box::new(move || {
+                    Box::pin(crate::ip_algorithms::get_plugin_ip_v6(command.clone(), timeout))
                 }))
             }
         };
