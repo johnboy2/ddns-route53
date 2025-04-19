@@ -1,168 +1,326 @@
 use core::str;
 use std::collections::HashSet;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
-use std::future::Future;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::Fn;
-use std::pin::Pin;
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
 use derivative::Derivative;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
-use lazy_format::lazy_format;
-use log::{debug, warn, LevelFilter};
+use log::{debug, error, warn, LevelFilter};
 use regex::Regex;
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ip_algorithms::StringOrStringVec;
 
-static DEFAULT_ALGO_TIMEOUT_SECONDS: f64 = 10.0;
-fn default_update_poll_seconds() -> f64 {
-    30.0
+fn default_algo_timeout() -> Duration {
+    Duration::from_secs(10)
 }
-fn default_update_timeout_seconds() -> f64 {
-    300.0
+fn default_update_poll_seconds() -> Duration {
+    Duration::from_secs(30)
+}
+fn default_update_timeout_seconds() -> Duration {
+    Duration::from_secs(300)
+}
+fn default_route53_ttl() -> i64 {
+    3600
+}
+fn default_log_level() -> LevelFilter {
+    LevelFilter::Info
+}
+fn default_log_level_other() -> LevelFilter {
+    LevelFilter::Warn
 }
 static MAX_CONFIG_FILE_SIZE: u64 = 65536;
-static MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
-static MAX_UPDATE_TIMEOUT_SECONDS: f64 = 3600.0;
+
+mod serde_duration_f64 {
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = f64::deserialize(deserializer)?;
+        if v < 0.0 {
+            Err(D::Error::custom(format!("value cannot be negative: {v}")))
+        } else {
+            Ok(Duration::from_secs_f64(v))
+        }
+    }
+
+    pub fn serialize<S>(d: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_f64(d.as_secs_f64())
+    }
+}
+
+mod serde_url {
+    use reqwest::Url;
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Url, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Url::parse(&s).map_err(|e| {
+            D::Error::custom(format!("could not parse url: \"{s}\": {}", e.to_string()))
+        })
+    }
+
+    pub fn serialize<S>(url: &Url, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(url.as_str())
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "type")]
-enum AlgorithmSpecificationV4 {
+enum AlgorithmSpecification {
     #[serde(rename = "default_public_ip")]
     DefaultPublicIp,
 
     #[serde(rename = "internet_gateway_protocol")]
-    InternetGatewayProtocol { timeout_seconds: Option<f64> },
+    InternetGatewayProtocol {
+        #[serde(
+            rename = "timeout_seconds",
+            with = "serde_duration_f64",
+            default = "default_algo_timeout"
+        )]
+        timeout: Duration,
+    },
 
     #[serde(rename = "web_service")]
     WebService {
-        url: String,
-        timeout_seconds: Option<f64>,
+        #[serde(with = "serde_url")]
+        url: Url,
+
+        #[serde(
+            rename = "timeout_seconds",
+            with = "serde_duration_f64",
+            default = "default_algo_timeout"
+        )]
+        timeout: Duration,
     },
 
     #[serde(rename = "plugin")]
     Plugin {
         command: StringOrStringVec,
-        timeout_seconds: Option<f64>,
+
+        #[serde(
+            rename = "timeout_seconds",
+            with = "serde_duration_f64",
+            default = "default_algo_timeout"
+        )]
+        timeout: Duration,
     },
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(tag = "type")]
-enum AlgorithmSpecificationV6 {
-    #[serde(rename = "default_public_ip")]
-    DefaultPublicIp,
+impl Debug for AlgorithmSpecification {
+    // For debugging purposes, we need a concise description of each algorithm.
+    // Serializing to (compact) JSON gives us that.
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        serde_json::to_string(&self)
+            .map_err(|e| {
+                error!(
+                    "Failed to serialize AlgorithmSpecification: {}",
+                    e.to_string()
+                );
+                std::fmt::Error
+            })
+            .and_then(|s| f.write_str(s.as_str()))
+    }
+}
 
-    #[serde(rename = "web_service")]
-    WebService {
-        url: String,
-        timeout_seconds: Option<f64>,
-    },
+impl Display for AlgorithmSpecification {
+    // For debugging purposes, we need a concise description of each algorithm.
+    // Serializing to (compact) JSON gives us that.
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::DefaultPublicIp => f.write_str("default_public_ip"),
+            Self::InternetGatewayProtocol { timeout: _ } => write!(f, "internet_gateway_protocol"),
+            Self::WebService { url, timeout: _ } => write!(f, "web_service:\"{}\"", url.as_str()),
+            Self::Plugin {
+                command,
+                timeout: _,
+            } => {
+                const MAX_STR_LEN: usize = 32;
+                match command {
+                    StringOrStringVec::String(s) => {
+                        if s.len() <= MAX_STR_LEN {
+                            write!(f, "plugin:\"{s}\"")
+                        } else {
+                            let substr: String = s.chars().take(MAX_STR_LEN - 1).collect();
+                            write!(f, "plugin:\"{substr}…\"")
+                        }
+                    }
+                    StringOrStringVec::Vec(v) => {
+                        if v.is_empty() {
+                            write!(f, "plugin:")
+                        } else if v[0].len() <= MAX_STR_LEN {
+                            write!(f, "plugin:\"{} …\"", v[0])
+                        } else {
+                            let substr: String = v[0].chars().take(MAX_STR_LEN - 1).collect();
+                            write!(f, "plugin:\"{substr}…\"")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
-    #[serde(rename = "plugin")]
-    Plugin {
-        command: StringOrStringVec,
-        timeout_seconds: Option<f64>,
-    },
+// Overrides the default in that a `Some("")` becomes `None`.
+fn deserialize_option_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = Option::<String>::deserialize(deserializer)?;
+    Ok(s.filter(|s| !s.is_empty()))
+}
+
+// Ensures TTLs are in a valid range
+fn deserialize_dns_ttl<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let i = i64::deserialize(deserializer)?;
+    if 0 <= i && i <= 2147483647i64 {
+        Ok(i)
+    } else {
+        use serde::de::Error;
+        Err(D::Error::custom(format!(
+            "value must be in range 0-2147483647i64: {i}"
+        )))
+    }
+}
+
+pub fn deserialize_log_level<'de, D>(deserializer: D) -> Result<LevelFilter, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let s = String::deserialize(deserializer)?;
+
+    match LevelFilter::from_str(s.as_str()) {
+        Ok(level) => {
+            // Why disallow "trace" to log files? Because it leaks AWS secrets within the Client object.
+            // I briefly entertained the idea of a CLI flag to allow override this restriction, but decided against that
+            // on the grounds that enabling truly dumb behavior (i.e., knowingly leaking secrets into log files) is
+            // almost always unwise. (At least any console leaking that might occur is under control of the user who has
+            // those secrets already.)
+            if level == LevelFilter::Trace {
+                Err(D::Error::custom("This level is not allowed for the log file. Use the \"-vvv\" CLI option to get trace-level logging to the console instead."))
+            } else {
+                Ok(level)
+            }
+        }
+        Err(_) => Err(D::Error::custom("Unknown log level")),
+    }
 }
 
 #[derive(Deserialize)]
 struct FileConfig {
     host_name: String,
 
-    #[serde(default = "default_update_poll_seconds")]
-    update_poll_seconds: f64,
+    #[serde(
+        rename = "update_poll_seconds",
+        with = "serde_duration_f64",
+        default = "default_update_poll_seconds"
+    )]
+    update_poll_interval: Duration,
 
-    #[serde(default = "default_update_timeout_seconds")]
-    update_timeout_seconds: f64,
+    #[serde(
+        rename = "update_timeout_seconds",
+        with = "serde_duration_f64",
+        default = "default_update_timeout_seconds"
+    )]
+    update_timeout: Duration,
 
-    ipv4_algorithms: Vec<AlgorithmSpecificationV4>,
-    ipv6_algorithms: Vec<AlgorithmSpecificationV6>,
+    ipv4_algorithms: Vec<AlgorithmSpecification>,
+
+    ipv6_algorithms: Vec<AlgorithmSpecification>,
+
+    #[serde(deserialize_with = "deserialize_option_string", default)]
     aws_profile: Option<String>,
+
+    #[serde(deserialize_with = "deserialize_option_string", default)]
     aws_access_key_id: Option<String>,
+
+    #[serde(deserialize_with = "deserialize_option_string", default)]
     aws_secret_access_key: Option<String>,
+
+    #[serde(deserialize_with = "deserialize_option_string", default)]
     aws_region: Option<String>,
+
+    #[serde(deserialize_with = "deserialize_option_string", default)]
     aws_route53_zone_id: Option<String>,
+
+    #[serde(
+        deserialize_with = "deserialize_dns_ttl",
+        default = "default_route53_ttl"
+    )]
     aws_route53_record_ttl: i64,
+
+    #[serde(deserialize_with = "deserialize_option_string", default)]
     log_file: Option<String>,
-    log_level: Option<String>,
-    log_level_other: Option<String>,
+
+    #[serde(
+        deserialize_with = "deserialize_log_level",
+        default = "default_log_level"
+    )]
+    log_level: LevelFilter,
+
+    #[serde(
+        deserialize_with = "deserialize_log_level",
+        default = "default_log_level_other"
+    )]
+    log_level_other: LevelFilter,
 }
 
-fn check_timeout(value: f64, maximum: Option<f64>) -> anyhow::Result<Duration> {
-    if value < 0.0 {
-        return Err(anyhow!("timeout cannot be negative: value={value}"));
-    } else if let Some(max) = maximum {
-        if max < value {
-            return Err(anyhow!("timeout cannot exceed {max}: value={value}"));
+impl FileConfig {
+    pub fn load(path: &String) -> anyhow::Result<FileConfig> {
+        let f = File::open(path).context("I/O error opening config file")?;
+
+        let mut reader = BufReader::new(f);
+
+        let file_size = reader
+            .seek(SeekFrom::End(0))
+            .context("I/O error seeking within config file")?;
+        if MAX_CONFIG_FILE_SIZE < file_size {
+            return Err(anyhow!(
+                "file too large: {path} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE})"
+            ));
         }
-    }
-    Ok(Duration::from_secs_f64(value))
-}
-
-fn check_bounded_integer(
-    value: i64,
-    minimum: Option<i64>,
-    maximum: Option<i64>,
-    description: &str,
-) -> anyhow::Result<i64> {
-    if let Some(min) = minimum {
-        if let Some(max) = maximum {
-            if value < min || max < value {
-                return Err(anyhow!("{description} must be in range {min}-{max}: {value}"));
-            }
-        } else if value < min {
-            return Err(anyhow!("{description} cannot be less than {min}: {value}"));
+        if file_size != 0 {
+            reader
+                .seek(SeekFrom::Start(0))
+                .expect("seek to start should always work");
         }
-    } else if let Some(max) = maximum {
-        if max < value {
-            return Err(anyhow!("{description} cannot be greater than {max}: {value}"));
-        }
-    } else {
-        panic!("check_bounded_integer must be called with at least one of minimum or maximum");
-    }
 
-    Ok(value)
-}
-
-fn read_config_file(config_path: &String) -> anyhow::Result<FileConfig> {
-    let f = File::open(config_path).context("I/O error opening config file")?;
-
-    let mut reader = BufReader::new(f);
-
-    let file_size = reader
-        .seek(SeekFrom::End(0))
-        .context("I/O error seeking within config file")?;
-    if MAX_CONFIG_FILE_SIZE < file_size {
-        return Err(anyhow!(
-            "file too large: {config_path} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE})"
-        ));
-    }
-    if file_size != 0 {
+        let mut content = String::new();
+        content.reserve(file_size as usize);
         reader
-            .seek(SeekFrom::Start(0))
-            .expect("seek to start should always work");
+            .read_to_string(&mut content)
+            .context("I/O error reading config file")?;
+
+        let file_config = toml::from_str(content.as_str()).context("failed to load config file")?;
+        Ok(file_config)
     }
-
-    let mut content = String::new();
-    reader
-        .read_to_string(&mut content)
-        .context("I/O error reading config file")?;
-
-    let file_config = toml::from_str(content.as_str()).context("failed to load config file")?;
-    Ok(file_config)
 }
-
-type V4AlgoFn =
-    dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Ipv4Addr>>> + Send>> + Sync;
-type V6AlgoFn =
-    dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Ipv6Addr>>> + Send>> + Sync;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -172,13 +330,8 @@ pub struct Config {
     pub update_poll_interval: Duration,
     pub update_timeout: Duration,
 
-    #[derivative(Debug = "ignore")]
-    ipv4_algo_fns: Vec<Box<V4AlgoFn>>,
-    ipv4_algo_descs: Vec<String>,
-
-    #[derivative(Debug = "ignore")]
-    ipv6_algo_fns: Vec<Box<V6AlgoFn>>,
-    ipv6_algo_descs: Vec<String>,
+    ipv4_algorithms: Vec<AlgorithmSpecification>,
+    ipv6_algorithms: Vec<AlgorithmSpecification>,
 
     pub route53_client: ::aws_sdk_route53::Client,
     pub route53_zone_id: String,
@@ -188,194 +341,9 @@ pub struct Config {
     log_level_other: LevelFilter,
 }
 
-struct V4AlgoResult {
-    descriptions: Vec<String>,
-    functions: Vec<Box<V4AlgoFn>>,
-}
-
-fn build_v4_algos(specs: &[AlgorithmSpecificationV4]) -> anyhow::Result<V4AlgoResult> {
-    let mut have_default = false;
-    let mut have_igd = false;
-    let mut have_web_service_url = HashSet::<&str>::with_capacity(specs.len());
-    let mut descriptions = Vec::<String>::with_capacity(specs.len());
-    let mut functions = Vec::<Box<V4AlgoFn>>::new();
-    for spec in specs.iter() {
-        match spec {
-            AlgorithmSpecificationV4::DefaultPublicIp => {
-                let name = "default_public_ip";
-                if have_default {
-                    return Err(anyhow!("ipv4:{name} can only be given once"));
-                }
-                have_default = true;
-                functions.push(Box::new(|| {
-                    Box::pin(crate::ip_algorithms::get_default_public_ip_v4())
-                }));
-            }
-            AlgorithmSpecificationV4::InternetGatewayProtocol { timeout_seconds } => {
-                let name = "internet_gateway_protocol";
-                if have_igd {
-                    return Err(anyhow!("ipv4:{name} can only be given once"));
-                }
-                have_igd = true;
-                let timeout = match timeout_seconds {
-                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
-                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
-                };
-                functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_igd_ip_v4(timeout))
-                }));
-            }
-            AlgorithmSpecificationV4::WebService {
-                url,
-                timeout_seconds,
-            } => {
-                let name = lazy_format!("web_service:[{url}]");
-                if !have_web_service_url.insert(url.as_str()) {
-                    return Err(anyhow!("ipv4:{name} can only be given once"));
-                }
-                let url_parsed =
-                    Url::parse(url).context(format!("could not parse url: \"{url}\""))?;
-                let url_owned = url.to_owned();
-                let timeout = match timeout_seconds {
-                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
-                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
-                };
-                functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_web_service_ip_v4(
-                        url_parsed.to_owned(),
-                        url_owned.to_owned(),
-                        timeout,
-                    ))
-                }))
-            }
-            AlgorithmSpecificationV4::Plugin {
-                command,
-                timeout_seconds,
-            } => {
-                let timeout = match timeout_seconds {
-                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
-                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
-                };
-                let command = command.to_owned();
-                functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_plugin_ip_v4(
-                        command.clone(),
-                        timeout,
-                    ))
-                }))
-            }
-        };
-
-        descriptions.push(serde_json::to_string(spec)?);
-    }
-
-    Ok(V4AlgoResult {
-        descriptions,
-        functions,
-    })
-}
-
-struct V6AlgoResult {
-    descriptions: Vec<String>,
-    functions: Vec<Box<V6AlgoFn>>,
-}
-
-fn build_v6_algos(specs: &[AlgorithmSpecificationV6]) -> anyhow::Result<V6AlgoResult> {
-    let mut have_default = false;
-    let mut have_web_service_url = HashSet::<&str>::with_capacity(specs.len());
-    let mut descriptions = Vec::<String>::with_capacity(specs.len());
-    let mut functions = Vec::<Box<V6AlgoFn>>::new();
-    for spec in specs.iter() {
-        match spec {
-            AlgorithmSpecificationV6::DefaultPublicIp => {
-                let name = "default_public_ip";
-                if have_default {
-                    return Err(anyhow!("ipv6:{name} can only be given once"));
-                }
-                have_default = true;
-                functions.push(Box::new(|| {
-                    Box::pin(crate::ip_algorithms::get_default_public_ip_v6())
-                }));
-            }
-            AlgorithmSpecificationV6::WebService {
-                url,
-                timeout_seconds,
-            } => {
-                let name = lazy_format!("web_service:[{url}]");
-                if !have_web_service_url.insert(url.as_str()) {
-                    return Err(anyhow!("ipv6:{name} can only be given once"));
-                }
-                let url_parsed =
-                    Url::parse(url).context(format!("could not parse url: \"{url}\""))?;
-                let url_owned = url.to_owned();
-                let timeout = match timeout_seconds {
-                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
-                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
-                };
-                functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_web_service_ip_v6(
-                        url_parsed.to_owned(),
-                        url_owned.to_owned(),
-                        timeout,
-                    ))
-                }))
-            }
-            AlgorithmSpecificationV6::Plugin {
-                command,
-                timeout_seconds,
-            } => {
-                let timeout = match timeout_seconds {
-                    Some(timeout_secs) => check_timeout(*timeout_secs, None)?,
-                    None => Duration::from_secs_f64(DEFAULT_ALGO_TIMEOUT_SECONDS),
-                };
-                let command = command.to_owned();
-                functions.push(Box::new(move || {
-                    Box::pin(crate::ip_algorithms::get_plugin_ip_v6(
-                        command.clone(),
-                        timeout,
-                    ))
-                }))
-            }
-        };
-
-        descriptions.push(serde_json::to_string(spec)?);
-    }
-
-    Ok(V6AlgoResult {
-        descriptions,
-        functions,
-    })
-}
-
-fn parse_log_level(name: &Option<String>, default: LevelFilter) -> anyhow::Result<LevelFilter> {
-    match name {
-        Some(name) => match name.as_str() {
-            "off" => Ok(LevelFilter::Off),
-            "error" => Ok(LevelFilter::Error),
-            "warn" => Ok(LevelFilter::Warn),
-            "info" => Ok(LevelFilter::Info),
-            "debug" => Ok(LevelFilter::Debug),
-            "trace" => Ok(LevelFilter::Trace),
-            _ => Err(anyhow!("unknown log level: \"{name}\"")),
-        },
-        None => Ok(default),
-    }
-}
-
-fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
-    let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](?:\\.[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
-        .expect("hard-coded regex should always be valid")
-    ;
-    if ptn.is_match(name) {
-        Ok(())
-    } else {
-        Err(anyhow!("invalid host name: \"{name}\""))
-    }
-}
-
 impl Config {
     pub async fn load(config_path: &String) -> anyhow::Result<Self> {
-        let config_file = read_config_file(config_path)?;
+        let config_file = FileConfig::load(config_path)?;
 
         let host_name_normalized = {
             let mut name_lower_idna =
@@ -383,21 +351,30 @@ impl Config {
                     .map(|s| s.into_owned())
                     .context("invalid hostname")?;
 
-            validate_idna_host_name(name_lower_idna.as_str()).context("invalid hostname")?;
+            Config::validate_idna_host_name(name_lower_idna.as_str())
+                .context("invalid hostname")?;
             if !name_lower_idna.ends_with(".") {
                 name_lower_idna += ".";
             }
             name_lower_idna
         };
 
-        let v4_algos = build_v4_algos(&config_file.ipv4_algorithms)?;
-        let v6_algos = build_v6_algos(&config_file.ipv6_algorithms)?;
+        for ipv6_algo in &config_file.ipv6_algorithms {
+            match ipv6_algo {
+                AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
+                    return Err(anyhow!("internet_gateway_protocol can only be used with ipv4_algorithms (not ipv6)"));
+                }
+                _ => {}
+            }
+        }
 
         if config_file.aws_access_key_id.is_some() != config_file.aws_secret_access_key.is_some() {
             return Err(anyhow!("config 'aws_access_key_id' and 'aws_secret_access_key' must both be either present or absent"));
         }
         if config_file.aws_access_key_id.is_some() && config_file.aws_profile.is_some() {
-            return Err(anyhow!("config cannot use 'aws_profile' with 'aws_access_key_id'"));
+            return Err(anyhow!(
+                "config cannot use 'aws_profile' with 'aws_access_key_id'"
+            ));
         }
 
         let client = crate::aws_route53::get_client(
@@ -416,35 +393,28 @@ impl Config {
         Ok(Self {
             host_name: config_file.host_name,
             host_name_normalized,
-            update_poll_interval: check_timeout(
-                config_file.update_poll_seconds,
-                Some(MAX_UPDATE_POLL_SECONDS),
-            )
-            .context("config: invalid \"update_poll_seconds\"")?,
-            update_timeout: check_timeout(
-                config_file.update_timeout_seconds,
-                Some(MAX_UPDATE_TIMEOUT_SECONDS),
-            )
-            .context("config: invalid \"update_timeout_seconds\"")?,
-            ipv4_algo_descs: v4_algos.descriptions,
-            ipv4_algo_fns: v4_algos.functions,
-            ipv6_algo_descs: v6_algos.descriptions,
-            ipv6_algo_fns: v6_algos.functions,
+            update_poll_interval: config_file.update_poll_interval,
+            update_timeout: config_file.update_timeout,
+            ipv4_algorithms: config_file.ipv4_algorithms,
+            ipv6_algorithms: config_file.ipv6_algorithms,
             route53_client: client,
             route53_zone_id: zone_id,
-            route53_record_ttl: check_bounded_integer(
-                config_file.aws_route53_record_ttl,
-                Some(0i64),
-                Some(2147483647i64),
-                "aws_route53_record_ttl",
-            )
-            .context("config: invalid \"aws_route53_record_ttl\"")?,
+            route53_record_ttl: config_file.aws_route53_record_ttl,
             log_file: config_file.log_file,
-            log_level: parse_log_level(&config_file.log_level, LevelFilter::Info)
-                .context("config: invalid \"log_level\"")?,
-            log_level_other: parse_log_level(&config_file.log_level_other, LevelFilter::Warn)
-                .context("config: invalid \"log_level_other\"")?,
+            log_level: config_file.log_level,
+            log_level_other: config_file.log_level_other,
         })
+    }
+
+    fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
+        let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](?:\\.[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
+            .expect("hard-coded regex should always be valid")
+        ;
+        if ptn.is_match(name) {
+            Ok(())
+        } else {
+            Err(anyhow!("invalid host name: \"{name}\""))
+        }
     }
 
     pub fn get_file_logger(&self) -> Result<Option<fern::Dispatch>, String> {
@@ -474,50 +444,92 @@ impl Config {
     }
 
     pub async fn get_ipv4_addresses(&self) -> HashSet<Ipv4Addr> {
-        for (name, algo_fn) in self.ipv4_algo_descs.iter().zip(self.ipv4_algo_fns.iter()) {
-            debug!("ipv4: Trying algorithm: {}", name);
-            let algo_result = algo_fn().await;
+        let algos = &self.ipv4_algorithms;
+        let ip_version = '4';
+
+        for (idx, algo) in algos.iter().enumerate() {
+            debug!("ipv{ip_version}_algorithms[{idx}]: Trying algorithm: {algo:?}");
+
+            let algo_result = match algo {
+                AlgorithmSpecification::DefaultPublicIp => {
+                    crate::ip_algorithms::get_default_public_ipv4().await
+                }
+                AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
+                    crate::ip_algorithms::get_igd_ipv4(timeout).await
+                }
+                AlgorithmSpecification::WebService { url, timeout } => {
+                    crate::ip_algorithms::get_web_service_ip::<Ipv4Addr>(url, timeout).await
+                }
+                AlgorithmSpecification::Plugin { command, timeout } => {
+                    crate::ip_algorithms::get_plugin_ip::<Ipv4Addr>(command, timeout).await
+                }
+            };
+
             match algo_result {
                 Ok(ips) => {
-                    debug!("ipv4: got addresses: {:?}", &ips);
+                    debug!(
+                        "ipv{ip_version}_algorithms[{idx}]: got addresses: {:?}",
+                        &ips
+                    );
                     if ips.is_empty() {
-                        debug!("ipv4: skipping empty result for algorithm: {}", name);
+                        debug!("ipv{ip_version}_algorithms[{idx}]: skipping empty result");
                     } else {
-                        debug!("ipv4: return {} found address(es)", ips.len());
                         return ips.iter().copied().collect();
                     }
                 }
                 Err(msg) => {
-                    warn!("ipv4: algorithm {} returned error: {}", name, msg);
+                    warn!("ipv{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
                 }
             };
         }
 
-        warn!("ipv4: none of the configured algorithms found any results; returning empty-set.");
+        warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
         HashSet::<Ipv4Addr>::new()
     }
 
     pub async fn get_ipv6_addresses(&self) -> HashSet<Ipv6Addr> {
-        for (name, algo_fn) in self.ipv6_algo_descs.iter().zip(self.ipv6_algo_fns.iter()) {
-            debug!("ipv6: Trying algorithm: {}", name);
-            let algo_result = algo_fn().await;
+        let algos = &self.ipv6_algorithms;
+        let ip_version = '6';
+
+        for (idx, algo) in algos.iter().enumerate() {
+            debug!("ipv{ip_version}_algorithms[{idx}]: Trying algorithm: {algo:?}");
+
+            let algo_result = match algo {
+                AlgorithmSpecification::DefaultPublicIp => {
+                    crate::ip_algorithms::get_default_public_ipv6().await
+                }
+                AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
+                    Err::<Vec<Ipv6Addr>, anyhow::Error>(anyhow!(
+                        "internet_gateway_device algorithm is not implemented for IPv6"
+                    ))
+                }
+                AlgorithmSpecification::WebService { url, timeout } => {
+                    crate::ip_algorithms::get_web_service_ip::<Ipv6Addr>(url, timeout).await
+                }
+                AlgorithmSpecification::Plugin { command, timeout } => {
+                    crate::ip_algorithms::get_plugin_ip::<Ipv6Addr>(command, timeout).await
+                }
+            };
+
             match algo_result {
                 Ok(ips) => {
-                    debug!("ipv6: got addresses: {:?}", &ips);
+                    debug!(
+                        "ipv{ip_version}_algorithms[{idx}]: got addresses: {:?}",
+                        &ips
+                    );
                     if ips.is_empty() {
-                        debug!("ipv6: skipping empty result for algorithm: {}", name);
+                        debug!("ipv{ip_version}_algorithms[{idx}]: skipping empty result");
                     } else {
-                        debug!("ipv6: return {} found address(es)", ips.len());
                         return ips.iter().copied().collect();
                     }
                 }
                 Err(msg) => {
-                    warn!("ipv6: algorithm {} returned error: {}", name, msg);
+                    warn!("ipv{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
                 }
             };
         }
 
-        warn!("ipv6: none of the configured algorithms found any results; returning empty-set.");
+        warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
         HashSet::<Ipv6Addr>::new()
     }
 }

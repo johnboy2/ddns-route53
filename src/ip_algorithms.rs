@@ -1,3 +1,7 @@
+use std::cmp::Eq;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
+use std::marker::Send;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::process::Stdio;
 use std::str::FromStr;
@@ -26,86 +30,164 @@ static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
 
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
 
-// Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
-// (The std::net::Ipv4Addr.is_global() function requires an unstable std library; hence we made our own instead.)
-fn ipv4_is_global(ip: &Ipv4Addr) -> bool {
-    !(ip.octets()[0] == 0 // "This network"
-    || ip.is_private()
-    || (
-        // ip.is_shared()
-        ip.octets()[0] == 100 && (ip.octets()[1] & 0b1100_0000 == 0b0100_0000)
-    )
-    || ip.is_loopback()
-    || ip.is_link_local()
-    // addresses reserved for future protocols (`192.0.0.0/24`)
-    // .9 and .10 are documented as globally reachable so they're excluded
-    || (
-        ip.octets()[0] == 192 && ip.octets()[1] == 0 && ip.octets()[2] == 0
-        && ip.octets()[3] != 9 && ip.octets()[3] != 10
-    )
-    || ip.is_documentation()
-    || (
-        // ip.is_benchmarking()
-        ip.octets()[0] == 198 && (ip.octets()[1] & 0xfe) == 18
-    )
-    || (
-        // ip.is_reserved()
-        ip.octets()[0] & 240 == 240 && !ip.is_broadcast()
-    )
-    || ip.is_broadcast())
+pub trait IpAddressV4orV6: Copy + Debug + Display + Eq + FromStr + Hash + Send {
+    fn is_global(&self) -> bool;
 }
 
-// Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
-// (The std::net::Ipv6Addr.is_global() function requires an unstable std library; hence we made our own instead.)
-fn ipv6_is_global(ip: &Ipv6Addr) -> bool {
-    !(ip.is_unspecified()
-    || ip.is_loopback()
-    // IPv4-mapped Address (`::ffff:0:0/96`)
-    || matches!(ip.segments(), [0, 0, 0, 0, 0, 0xffff, _, _])
-    // IPv4-IPv6 Translat. (`64:ff9b:1::/48`)
-    || matches!(ip.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
-    // Discard-Only Address Block (`100::/64`)
-    || matches!(ip.segments(), [0x100, 0, 0, 0, _, _, _, _])
-    // IETF Protocol Assignments (`2001::/23`)
-    || (matches!(ip.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
-        && !(
-            // Port Control Protocol Anycast (`2001:1::1`)
-            u128::from_be_bytes(ip.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
-            // Traversal Using Relays around NAT Anycast (`2001:1::2`)
-            || u128::from_be_bytes(ip.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
-            // AMT (`2001:3::/32`)
-            || matches!(ip.segments(), [0x2001, 3, _, _, _, _, _, _])
-            // AS112-v6 (`2001:4:112::/48`)
-            || matches!(ip.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
-            // ORCHIDv2 (`2001:20::/28`)
-            // Drone Remote ID Protocol Entity Tags (DETs) Prefix (`2001:30::/28`)`
-            || matches!(ip.segments(), [0x2001, b, _, _, _, _, _, _] if (0x20..=0x3F).contains(&b))
+impl IpAddressV4orV6 for Ipv4Addr {
+    // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
+    // (The std::net::Ipv4Addr.is_global() function requires an unstable std library; hence we made our own instead.)
+    fn is_global(&self) -> bool {
+        !(self.octets()[0] == 0 // "This network"
+        || self.is_private()
+        || (
+            // self.is_shared()
+            self.octets()[0] == 100 && (self.octets()[1] & 0b1100_0000 == 0b0100_0000)
+        )
+        || self.is_loopback()
+        || self.is_link_local()
+        // addresses reserved for future protocols (`192.0.0.0/24`)
+        // .9 and .10 are documented as globally reachable so they're excluded
+        || (
+            self.octets()[0] == 192 && self.octets()[1] == 0 && self.octets()[2] == 0
+            && self.octets()[3] != 9 && self.octets()[3] != 10
+        )
+        || self.is_documentation()
+        || (
+            // self.is_benchmarking()
+            self.octets()[0] == 198 && (self.octets()[1] & 0xfe) == 18
+        )
+        || (
+            // self.is_reserved()
+            self.octets()[0] & 240 == 240 && !self.is_broadcast()
+        )
+        || self.is_broadcast())
+    }
+}
+
+impl IpAddressV4orV6 for Ipv6Addr {
+    // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
+    // (The std::net::Ipv6Addr.is_global() function requires an unstable std library; hence we made our own instead.)
+    fn is_global(&self) -> bool {
+        !(self.is_unspecified()
+        || self.is_loopback()
+        // IPv4-mapped Address (`::ffff:0:0/96`)
+        || matches!(self.segments(), [0, 0, 0, 0, 0, 0xffff, _, _])
+        // IPv4-IPv6 Translat. (`64:ff9b:1::/48`)
+        || matches!(self.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
+        // Discard-Only Address Block (`100::/64`)
+        || matches!(self.segments(), [0x100, 0, 0, 0, _, _, _, _])
+        // IETF Protocol Assignments (`2001::/23`)
+        || (matches!(self.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
+            && !(
+                // Port Control Protocol Anycast (`2001:1::1`)
+                u128::from_be_bytes(self.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
+                // Traversal Using Relays around NAT Anycast (`2001:1::2`)
+                || u128::from_be_bytes(self.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
+                // AMT (`2001:3::/32`)
+                || matches!(self.segments(), [0x2001, 3, _, _, _, _, _, _])
+                // AS112-v6 (`2001:4:112::/48`)
+                || matches!(self.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
+                // ORCHIDv2 (`2001:20::/28`)
+                // Drone Remote ID Protocol Entity Tags (DETs) Prefix (`2001:30::/28`)`
+                || matches!(self.segments(), [0x2001, b, _, _, _, _, _, _] if (0x20..=0x3F).contains(&b))
+            ))
+        // 6to4 (`2002::/16`) – it's not explicitly documented as globally reachable,
+        // IANA says N/A.
+        || matches!(self.segments(), [0x2002, _, _, _, _, _, _, _])
+        || (
+            // ip.is_documentation()
+            (self.segments()[0] == 0x2001) && (self.segments()[1] == 0xdb8)
+        )
+        || (
+            // ip.is_unique_local()
+            (self.segments()[0] & 0xfe00) == 0xfc00
+        )
+        || (
+            // ip.is_unicast_link_local()
+            (self.segments()[0] & 0xffc0) == 0xfe80
         ))
-    // 6to4 (`2002::/16`) – it's not explicitly documented as globally reachable,
-    // IANA says N/A.
-    || matches!(ip.segments(), [0x2002, _, _, _, _, _, _, _])
-    || (
-        // ip.is_documentation()
-        (ip.segments()[0] == 0x2001) && (ip.segments()[1] == 0xdb8)
-    )
-    || (
-        // ip.is_unique_local()
-        (ip.segments()[0] & 0xfe00) == 0xfc00
-    )
-    || (
-        // ip.is_unicast_link_local()
-        (ip.segments()[0] & 0xffc0) == 0xfe80
-    ))
+    }
+}
+
+pub async fn get_default_public_ipv4() -> anyhow::Result<Vec<Ipv4Addr>> {
+    let default_interface = (*DEFAULT_INTERFACE)
+        .as_ref()
+        .map_err(anyhow::Error::msg)
+        .context("failed to determine default network interface")?;
+
+    let mut result = Vec::<Ipv4Addr>::new();
+    for network in &default_interface.ipv4 {
+        let ip_net_addr = network.addr();
+        if IpAddressV4orV6::is_global(&ip_net_addr) {
+            result.push(ip_net_addr);
+        } else {
+            debug!(
+                "Ignoring address [{}] on default interface: address is non-global",
+                ip_net_addr
+            );
+        }
+    }
+    Ok(result)
+}
+
+pub async fn get_default_public_ipv6() -> anyhow::Result<Vec<Ipv6Addr>> {
+    let default_interface = (*DEFAULT_INTERFACE)
+        .as_ref()
+        .map_err(anyhow::Error::msg)
+        .context("failed to determine default network interface")?;
+
+    let mut result = Vec::<Ipv6Addr>::new();
+    for network in &default_interface.ipv6 {
+        let ip_net_addr = network.addr();
+        if IpAddressV4orV6::is_global(&ip_net_addr) {
+            result.push(ip_net_addr);
+        } else {
+            debug!(
+                "Ignoring address [{}] on default interface: address is non-global",
+                ip_net_addr
+            );
+        }
+    }
+    Ok(result)
+}
+
+pub async fn get_igd_ipv4(timeout: &Duration) -> anyhow::Result<Vec<Ipv4Addr>> {
+    let timeout = *timeout; // Make local copy prior to move
+
+    // Spawn this into a thread (since it is blocking code)
+    spawn_blocking(move || {
+        let search_option = SearchOptions {
+            timeout: Some(timeout),
+            ..Default::default()
+        };
+        let gateway = search_gateway(search_option).context("error finding internet gateway")?;
+
+        let ip = gateway
+            .get_external_ip()
+            .context("error parsing external IP from internet gateway")?;
+        if let IpAddr::V4(v4) = ip {
+            if <Ipv4Addr as IpAddressV4orV6>::is_global(&v4) {
+                return Ok(vec![v4]);
+            } else {
+                debug!(
+                    "Ignoring address [{}] reported by internet gateway: address is non-global",
+                    v4
+                );
+            }
+        }
+        Ok(Vec::<Ipv4Addr>::new())
+    })
+    .await?
 }
 
 // Helper to download a document from a URL
 async fn get_web_service_document(
     client: &Client,
-    url: Url,
-    url_string: &String,
-    timeout: Duration,
+    url: &Url,
+    timeout: &Duration,
 ) -> anyhow::Result<String> {
-    let request = client.get(url).timeout(timeout).send();
+    let request = client.get(url.clone()).timeout(*timeout).send();
     let response = request.await.context("error fetching url")?;
     let mut content_length: u64 = 0;
 
@@ -113,7 +195,7 @@ async fn get_web_service_document(
         if MAX_WEB_SERVICE_DOCUMENT_LENGTH < cl {
             return Err(anyhow!(
                 "url \"{}\": Content-Length ({}) too long (max={})",
-                url_string,
+                url.as_str(),
                 cl,
                 MAX_WEB_SERVICE_DOCUMENT_LENGTH
             ));
@@ -147,15 +229,16 @@ async fn get_web_service_document(
     let mut stream = response.bytes_stream();
     while let Some(item) = stream.next().await {
         let item = item.context("error reading from stream")?;
-        body_binary.extend_from_slice(item.as_ref());
-        if MAX_WEB_SERVICE_DOCUMENT_LENGTH < (body_binary.len() as u64) {
+        let len_after_append = item.len() + body_binary.len();
+        if MAX_WEB_SERVICE_DOCUMENT_LENGTH < (len_after_append as u64) {
             return Err(anyhow!(
                 "url \"{}\": body length ({}) too long (max={})",
-                url_string,
-                body_binary.len(),
+                url.as_str(),
+                len_after_append,
                 MAX_WEB_SERVICE_DOCUMENT_LENGTH
             ));
         }
+        body_binary.extend_from_slice(item.as_ref());
     }
 
     // Undecodeable byte sequnces to get U+FFFD (replacement character). That's
@@ -166,6 +249,44 @@ async fn get_web_service_document(
     Ok(text.into_owned())
 }
 
+pub async fn get_web_service_ip<T>(url: &Url, timeout: &Duration) -> anyhow::Result<Vec<T>>
+where
+    T: IpAddressV4orV6,
+    <T as FromStr>::Err: ToString,
+{
+    let client = (*WEB_CLIENT)
+        .as_ref()
+        .context("failed to initialize web client")?;
+
+    let body = get_web_service_document(client, url, timeout).await?;
+
+    let mut result = Vec::<T>::new();
+    for line in body.as_str().lines() {
+        trace!("Received result: \"{line}\"");
+        let ip = match T::from_str(line) {
+            Ok(result) => result,
+            Err(e) => {
+                return Err(anyhow!(
+                    "failed to parse address from web service: {}",
+                    e.to_string()
+                ))
+            }
+        };
+
+        if ip.is_global() {
+            result.push(ip)
+        } else {
+            debug!(
+                "Ignoring address [{}] reported by web-service:{}: address is non-global",
+                ip,
+                url.as_str()
+            );
+        }
+    }
+
+    Ok(result)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum StringOrStringVec {
@@ -173,9 +294,9 @@ pub enum StringOrStringVec {
     Vec(Vec<String>),
 }
 
-pub async fn get_plugin_output(
-    command: StringOrStringVec,
-    timeout: Duration,
+async fn get_plugin_output(
+    command: &StringOrStringVec,
+    timeout: &Duration,
 ) -> anyhow::Result<String> {
     let mut command_obj: Command;
 
@@ -250,7 +371,7 @@ pub async fn get_plugin_output(
                 succeeded = false;
             }
         }
-        _ = sleep(timeout) => {
+        _ = sleep(*timeout) => {
             drop(read_stdout_fut);
             child.kill().await.expect("failed to kill child after timeout");
             return Err(anyhow!("plugin timed out"));
@@ -275,15 +396,15 @@ pub async fn get_plugin_output(
             // page output would both parse the same -- if that's what we got. If we got past that
             // point without matching, then the data is most likely some form of UTF-16.
             if data.len() & 1 == 0 {
-                // Even (not odd) number of characters
+                // Even (not odd) number of bytes
                 if data.len() >= 2 {
                     if data[..2] == b"\xFF\xFE" {
-                        // Found a UTF16 BOM; try to read everything after it.
+                        // Found a UTF16-LE BOM; try to read everything after it.
                         if let Ok(r) = String::from_utf16_le(data[2..]) {
                             return Some(r);
                         }
                     } else if data[..2] == b"\xFE\xFF" {
-                        // Found a UTF16 BOM; try to read everything after it.
+                        // Found a UTF16-BE BOM; try to read everything after it.
                         if let Ok(r) = String::from_utf16_be(data[2..]) {
                             return Some(r);
                         }
@@ -327,164 +448,29 @@ pub async fn get_plugin_output(
     }
 }
 
-pub async fn get_default_public_ip_v4() -> anyhow::Result<Vec<Ipv4Addr>> {
-    let default_interface = (*DEFAULT_INTERFACE)
-        .as_ref()
-        .map_err(anyhow::Error::msg)
-        .context("failed to determine default network interface")?;
+pub async fn get_plugin_ip<T>(
+    command: &StringOrStringVec,
+    timeout: &Duration,
+) -> anyhow::Result<Vec<T>>
+where
+    T: IpAddressV4orV6,
+    <T as FromStr>::Err: ToString,
+{
+    let output = get_plugin_output(command, timeout).await?;
 
-    let mut result = Vec::<Ipv4Addr>::new();
-    for ip_net in &default_interface.ipv4 {
-        let ip_net_addr = ip_net.addr();
-        if ipv4_is_global(&ip_net_addr) {
-            result.push(ip_net_addr);
-        } else {
-            debug!(
-                "Ignoring address [{}] on default interface: address is non-global",
-                ip_net_addr
-            );
-        }
-    }
-
-    Ok(result)
-}
-
-pub async fn get_igd_ip_v4(timeout: Duration) -> anyhow::Result<Vec<Ipv4Addr>> {
-    // This algorithm blocks, so we spin it off into its own thread.
-    spawn_blocking(move || {
-        let search_option = SearchOptions {
-            timeout: Some(timeout),
-            ..Default::default()
-        };
-        let gateway = search_gateway(search_option).context("error finding internet gateway")?;
-
-        let ip = gateway
-            .get_external_ip()
-            .context("error parsing external IP from internet gateway")?;
-        if let IpAddr::V4(v4) = ip {
-            if ipv4_is_global(&v4) {
-                return Ok(vec![v4]);
-            } else {
-                debug!(
-                    "Ignoring address [{}] reported by internet gateway: address is non-global",
-                    v4
-                );
+    let mut result = Vec::<T>::new();
+    for line in output.as_str().lines() {
+        let ip = match T::from_str(line) {
+            Ok(result) => result,
+            Err(e) => {
+                return Err(anyhow!(
+                    "failed to parse IP address from plugin: {}",
+                    e.to_string()
+                ))
             }
-        }
-        Ok(Vec::<Ipv4Addr>::new())
-    })
-    .await?
-}
+        };
 
-pub async fn get_web_service_ip_v4(
-    url: Url,
-    url_string: String,
-    timeout: Duration,
-) -> anyhow::Result<Vec<Ipv4Addr>> {
-    let client = (*WEB_CLIENT)
-        .as_ref()
-        .context("failed to initialize web client")?;
-
-    let body = get_web_service_document(client, url, &url_string, timeout).await?;
-
-    let mut result = Vec::<Ipv4Addr>::new();
-    for line in body.as_str().lines() {
-        trace!("Received result: \"{line}\"");
-        let ip =
-            Ipv4Addr::from_str(line).context("failed to parse IPv4 address from web service")?;
-        if ipv4_is_global(&ip) {
-            result.push(ip)
-        } else {
-            debug!(
-                "Ignoring address [{}] reported by web-service:{}: address is non-global",
-                ip, url_string
-            );
-        }
-    }
-
-    Ok(result)
-}
-
-pub async fn get_plugin_ip_v4(
-    command: StringOrStringVec,
-    timeout: Duration,
-) -> anyhow::Result<Vec<Ipv4Addr>> {
-    let output = get_plugin_output(command, timeout).await?;
-
-    let mut result = Vec::<Ipv4Addr>::new();
-    for line in output.as_str().lines() {
-        let ip = Ipv4Addr::from_str(line).context("failed to parse IPv4 address from plugin")?;
-        if ipv4_is_global(&ip) {
-            result.push(ip);
-        } else {
-            debug!("Ignoring address [{ip}] reported by plugin: address is non-global");
-        }
-    }
-
-    Ok(result)
-}
-
-pub async fn get_default_public_ip_v6() -> anyhow::Result<Vec<Ipv6Addr>> {
-    let default_interface = (*DEFAULT_INTERFACE)
-        .as_ref()
-        .map_err(anyhow::Error::msg)
-        .context("failed to determine default network interface")?;
-
-    let mut result = Vec::<Ipv6Addr>::new();
-    for ip_net in &default_interface.ipv6 {
-        let ip_net_addr = ip_net.addr();
-        if ipv6_is_global(&ip_net_addr) {
-            result.push(ip_net_addr)
-        } else {
-            debug!(
-                "Ignoring address [{}] on default interface: address is non-global",
-                ip_net_addr
-            );
-        }
-    }
-
-    Ok(result)
-}
-
-pub async fn get_web_service_ip_v6(
-    url: Url,
-    url_string: String,
-    timeout: Duration,
-) -> anyhow::Result<Vec<Ipv6Addr>> {
-    let client = (*WEB_CLIENT)
-        .as_ref()
-        .context("failed to initialize web client")?;
-
-    let body = get_web_service_document(client, url, &url_string, timeout).await?;
-
-    let mut result = Vec::<Ipv6Addr>::new();
-    for line in body.as_str().lines() {
-        trace!("Received result: \"{line}\"");
-        let ip =
-            Ipv6Addr::from_str(line).context("failed to parse IPv4 address from web service")?;
-        if ipv6_is_global(&ip) {
-            result.push(ip)
-        } else {
-            debug!(
-                "Ignoring address [{}] reported by web-service:{}: address is non-global",
-                ip, url_string
-            );
-        }
-    }
-
-    Ok(result)
-}
-
-pub async fn get_plugin_ip_v6(
-    command: StringOrStringVec,
-    timeout: Duration,
-) -> anyhow::Result<Vec<Ipv6Addr>> {
-    let output = get_plugin_output(command, timeout).await?;
-
-    let mut result = Vec::<Ipv6Addr>::new();
-    for line in output.as_str().lines() {
-        let ip = Ipv6Addr::from_str(line).context("failed to parse IPv6 address from plugin")?;
-        if ipv6_is_global(&ip) {
+        if <T as IpAddressV4orV6>::is_global(&ip) {
             result.push(ip);
         } else {
             debug!("Ignoring address [{ip}] reported by plugin: address is non-global");
