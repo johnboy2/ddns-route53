@@ -125,7 +125,7 @@ async fn main() {
             return;
         }
     };
-    debug!("Got route53: {:?}", addresses_route53);
+    debug!("Got route53: {:?}", Addresses::from(&addresses_route53));
 
     match update_host_addresses_if_different(
         &arc_config,

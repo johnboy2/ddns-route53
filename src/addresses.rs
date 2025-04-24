@@ -1,5 +1,7 @@
 use std::collections::HashSet;
+use std::convert::From;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 
 use aws_sdk_route53::types::ResourceRecordSet;
 
@@ -9,10 +11,32 @@ pub struct Addresses {
     pub v6: HashSet<Ipv6Addr>,
 }
 
-// TODO: Consider writing your own fmt::Debug impl for this, which doesn't emit any of the 'None' value from the ResourceRecordSet object.
-//       That would be helpful, because there are more such 'None' values that non-None ones -- leading to cleaner output.
-#[derive(Debug)]
 pub struct AddressRecords {
     pub v4: Option<ResourceRecordSet>,
     pub v6: Option<ResourceRecordSet>,
+}
+
+impl From<&AddressRecords> for Addresses {
+    fn from(item: &AddressRecords) -> Self {
+        let mut ipv4addr_set = HashSet::<Ipv4Addr>::new();
+        item.v4.as_ref().map(|rrs| {
+            for rr in rrs.resource_records() {
+                ipv4addr_set
+                    .insert(Ipv4Addr::from_str(rr.value.as_str()).expect("valid IPv4 address"));
+            }
+        });
+
+        let mut ipv6addr_set = HashSet::<Ipv6Addr>::new();
+        item.v6.as_ref().map(|rrs| {
+            for rr in rrs.resource_records() {
+                ipv6addr_set
+                    .insert(Ipv6Addr::from_str(rr.value.as_str()).expect("valid IPv6 address"));
+            }
+        });
+
+        Addresses {
+            v4: ipv4addr_set,
+            v6: ipv6addr_set,
+        }
+    }
 }
