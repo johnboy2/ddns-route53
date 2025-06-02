@@ -145,8 +145,8 @@ impl Debug for AlgorithmSpecification {
 }
 
 impl Display for AlgorithmSpecification {
-    // For debugging purposes, we need a concise description of each algorithm.
-    // Serializing to (compact) JSON gives us that.
+    // The Display fmt() function only needs to make each algorithm
+    // identifiable; full details are NOT required.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Self::DefaultPublicIp => f.write_str("default_public_ip"),
