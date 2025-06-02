@@ -29,6 +29,7 @@ static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
     LazyLock::new(|| ClientBuilder::new().build());
 
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
+const MAX_PLUGIN_DOCUMENT_LENGTH: u64 = 65535;
 
 pub trait IpAddressV4orV6: Copy + Debug + Display + Eq + FromStr + Hash + Send {
     fn is_global(&self) -> bool;
@@ -346,11 +347,16 @@ async fn get_plugin_output(
     let mut child = command_obj.spawn().expect("plugin failed to start");
     drop(child.stdin.take());
 
-    let mut stdout = child.stdout.take().expect("failed to unwrap stdout pipe");
+    let stdout = child.stdout.take().expect("failed to unwrap stdout pipe");
     let read_stdout_fut = tokio::spawn(async move {
         let mut buff = Vec::new();
-        let _ = stdout.read_to_end(&mut buff).await;
-        buff
+        let _ = stdout.take(MAX_PLUGIN_DOCUMENT_LENGTH).read_to_end(&mut buff).await;
+        
+        if buff.len() == (MAX_PLUGIN_DOCUMENT_LENGTH as usize) {
+            return Err(anyhow!("plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"));
+        }
+
+        Ok(buff)
     });
 
     let mut succeeded = true;
@@ -380,7 +386,7 @@ async fn get_plugin_output(
 
     let stdout_content = read_stdout_fut
         .await
-        .expect("failed to unwrap stdout buffer content");
+        .expect("failed to unwrap stdout buffer content")?;
 
     fn try_read_data_as_text(data: &[u8]) -> Option<String> {
         if let Ok(r) = std::str::from_utf8(data) {
