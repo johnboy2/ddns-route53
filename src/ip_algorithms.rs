@@ -430,18 +430,18 @@ async fn get_plugin_output(
         // For troubleshooting purposes, we should still log what we got -- even though it was
         // undecodeable. So log it as hex-encoded bytes.
         let mut data_hex_bytes = String::with_capacity(stdout_content.len() * 2);
-        fn to_hex(ch: u8) -> char {
-            let result_u8 = if ch < 10 {
-                ch + ('0' as u8)
+        fn to_hex(half_byte: u8) -> char {
+            let result_u8 = if half_byte < 10 {
+                half_byte + ('0' as u8)
             } else {
-                ch + ('A' as u8) - 10u8
+                half_byte + ('A' as u8) - 10u8
             };
             let result_ch = result_u8 as char;
             return result_ch;
         }
-        for ch in stdout_content.iter() {
-            data_hex_bytes.push(to_hex(ch >> 4));
-            data_hex_bytes.push(to_hex(ch & 0x0F));
+        for byte in stdout_content.iter() {
+            data_hex_bytes.push(to_hex(byte >> 4));
+            data_hex_bytes.push(to_hex(byte & 0x0F));
         }
         error!("plugin output could not be decoded; value: 0x{data_hex_bytes}");
         Err(anyhow!("failed to decode plugin output"))
