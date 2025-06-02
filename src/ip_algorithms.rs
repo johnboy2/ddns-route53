@@ -341,7 +341,7 @@ async fn get_plugin_output(
     command_obj.stdout(Stdio::piped());
     #[cfg(windows)]
     {
-        command_obj.creation_flags = 0x08000000; // CREATE_NO_WINDOW
+        command_obj.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
     let mut child = command_obj.spawn().expect("plugin failed to start");
@@ -404,20 +404,22 @@ async fn get_plugin_output(
             if data.len() & 1 == 0 {
                 // Even (not odd) number of bytes
                 if data.len() >= 2 {
-                    if data[..2] == b"\xFF\xFE" {
+                    if data.starts_with(b"\xFF\xFE") {
                         // Found a UTF16-LE BOM; try to read everything after it.
-                        if let Ok(r) = String::from_utf16_le(data[2..]) {
-                            return Some(r);
+                        // TODO: Move to String::from_utf16le() once it is out of nightly.
+                        if let Ok(r) = utf16string::WStr::from_utf16le(&data[2..]) {
+                            return Some(r.to_utf8());
                         }
-                    } else if data[..2] == b"\xFE\xFF" {
+                    } else if data.starts_with(b"\xFE\xFF") {
                         // Found a UTF16-BE BOM; try to read everything after it.
-                        if let Ok(r) = String::from_utf16_be(data[2..]) {
-                            return Some(r);
+                        // TODO: Move to String::from_utf16be() once it is out of nightly.
+                        if let Ok(r) = utf16string::WStr::from_utf16be(&data[2..]) {
+                            return Some(r.to_utf8());
                         }
                     }
                 }
-                if let Ok(r) = String::from_utf16(data) {
-                    return Some(r);
+                if let Ok(r) = utf16string::WStr::<byteorder::NativeEndian>::from_utf16(&data) {
+                    return Some(r.to_utf8());
                 }
             }
         }

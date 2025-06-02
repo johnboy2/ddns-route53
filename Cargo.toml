@@ -32,6 +32,10 @@ tokio = { version = "1", features = ["macros","process","rt","time"] }
 tokio-stream = "0.1"
 toml = "0.8"
 
+[target.'cfg(windows)'.dependencies]
+byteorder = "1.5"
+utf16string = "0.2"
+
 [profile.dev]
 opt-level = 1  # Use only basic optimizations
 
