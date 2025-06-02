@@ -1,11 +1,7 @@
-use std::io::stdout;
 use std::process::exit;
 use std::rc::Rc;
-use std::time::SystemTime;
 
-use fern::Dispatch;
-use humantime::format_rfc3339_seconds;
-use log::{debug, error, info, trace, warn, LevelFilter};
+use log::{debug, error, info, trace, warn};
 use tokio::task::{JoinHandle, LocalSet};
 
 mod addresses;
@@ -18,63 +14,13 @@ use crate::addresses::{AddressRecords, Addresses};
 use crate::aws_route53::{
     get_resource_records, update_host_addresses_if_different, UpdateHostResult,
 };
-use crate::cli::parse_cli_args;
 use crate::config::Config;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let args = parse_cli_args();
-
-    let log_stdout = Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{} [{}] {}: {}",
-                format_rfc3339_seconds(SystemTime::now()),
-                record.target(),
-                record.level(),
-                message
-            ))
-        })
-        .level_for(
-            env!("CARGO_CRATE_NAME"),
-            match args.verbose {
-                0 => LevelFilter::Warn,
-                1 => LevelFilter::Info,
-                2 => LevelFilter::Debug,
-                _ => LevelFilter::Trace,
-            },
-        )
-        .level(match args.log_other {
-            0 => LevelFilter::Warn,
-            1 => LevelFilter::Info,
-            2 => LevelFilter::Debug,
-            _ => LevelFilter::Trace,
-        })
-        .chain(stdout());
-
-    let config = match Config::load(&args.config_path).await {
-        Ok(config) => {
-            let log_file = config.get_file_logger();
-            match log_file {
-                Ok(log_file) => {
-                    if let Some(log_file) = log_file {
-                        Dispatch::new()
-                            .chain(log_stdout)
-                            .chain(log_file)
-                            .apply()
-                            .expect("multiple loggers not allowed");
-                    }
-                }
-                Err(e) => {
-                    log_stdout.apply().expect("multiple loggers not allowed");
-                    error!("{e}");
-                    return;
-                }
-            };
-            config
-        }
+    let config = match Config::load().await {
+        Ok(config) => config,
         Err(e) => {
-            log_stdout.apply().expect("multiple loggers not allowed");
             error!("{e:?}");
             return;
         }
@@ -127,13 +73,8 @@ async fn main() {
     };
     debug!("Got route53: {:?}", Addresses::from(&addresses_route53));
 
-    match update_host_addresses_if_different(
-        &arc_config,
-        &addresses_current,
-        &addresses_route53,
-        !args.no_update,
-    )
-    .await
+    match update_host_addresses_if_different(&arc_config, &addresses_current, &addresses_route53)
+        .await
     {
         Ok(result) => {
             match result {

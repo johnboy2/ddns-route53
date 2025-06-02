@@ -271,7 +271,6 @@ pub async fn update_host_addresses_if_different(
     config: &Config,
     desired_addresses: &Addresses,
     current_address_records: &AddressRecords,
-    do_update: bool,
 ) -> anyhow::Result<UpdateHostResult> {
     let changes = {
         let mut changes = Vec::<Change>::new();
@@ -298,7 +297,7 @@ pub async fn update_host_addresses_if_different(
 
     if changes.is_empty() {
         return Ok(UpdateHostResult::NotRequired);
-    } else if !do_update {
+    } else if !config.update_if_different {
         return Ok(UpdateHostResult::UpdateSkipped);
     }
     let start_time = Instant::now();

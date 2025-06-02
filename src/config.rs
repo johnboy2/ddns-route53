@@ -2,7 +2,7 @@ use core::str;
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{stdout, BufReader, Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
@@ -10,12 +10,15 @@ use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
 use derivative::Derivative;
+use fern::Dispatch;
+use humantime::format_rfc3339_seconds;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
 use log::{debug, error, warn, LevelFilter};
 use regex::Regex;
 use reqwest::Url;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::cli::{parse_cli_args, Args};
 use crate::ip_algorithms::StringOrStringVec;
 
 fn default_algo_timeout() -> Duration {
@@ -36,7 +39,9 @@ fn default_log_level() -> LevelFilter {
 fn default_log_level_other() -> LevelFilter {
     LevelFilter::Warn
 }
-static MAX_CONFIG_FILE_SIZE: u64 = 65536;
+const MAX_CONFIG_FILE_SIZE: u64 = 65536;
+const TTL_MIN: i64 = 0;
+const TTL_MAX: i64 = 2147483647;
 
 mod serde_duration_f64 {
     use serde::de::Error;
@@ -197,12 +202,12 @@ where
     D: Deserializer<'de>,
 {
     let i = i64::deserialize(deserializer)?;
-    if 0 <= i && i <= 2147483647i64 {
+    if TTL_MIN <= i && i <= TTL_MAX {
         Ok(i)
     } else {
         use serde::de::Error;
         Err(D::Error::custom(format!(
-            "value must be in range 0-2147483647i64: {i}"
+            "DNS TTL value must be in range {TTL_MIN}-{TTL_MAX}: {i}"
         )))
     }
 }
@@ -329,6 +334,7 @@ pub struct Config {
     pub host_name_normalized: String,
     pub update_poll_interval: Duration,
     pub update_timeout: Duration,
+    pub update_if_different: bool,
 
     ipv4_algorithms: Vec<AlgorithmSpecification>,
     ipv6_algorithms: Vec<AlgorithmSpecification>,
@@ -342,8 +348,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub async fn load(config_path: &String) -> anyhow::Result<Self> {
-        let config_file = FileConfig::load(config_path)?;
+    async fn _apply_config_file(cli_args: &Args) -> anyhow::Result<Self> {
+        let config_file = FileConfig::load(&cli_args.config_path)?;
 
         let host_name_normalized = {
             let mut name_lower_idna =
@@ -395,6 +401,7 @@ impl Config {
             host_name_normalized,
             update_poll_interval: config_file.update_poll_interval,
             update_timeout: config_file.update_timeout,
+            update_if_different: !cli_args.no_update,
             ipv4_algorithms: config_file.ipv4_algorithms,
             ipv6_algorithms: config_file.ipv6_algorithms,
             route53_client: client,
@@ -404,6 +411,69 @@ impl Config {
             log_level: config_file.log_level,
             log_level_other: config_file.log_level_other,
         })
+    }
+
+    pub async fn load() -> anyhow::Result<Self> {
+        let cli_args = parse_cli_args();
+
+        let log_stdout = Dispatch::new()
+            .format(|out, message, record| {
+                out.finish(format_args!(
+                    "{} [{}] {}: {}",
+                    format_rfc3339_seconds(SystemTime::now()),
+                    record.target(),
+                    record.level(),
+                    message
+                ))
+            })
+            .level_for(
+                env!("CARGO_CRATE_NAME"),
+                match cli_args.verbose {
+                    0 => LevelFilter::Warn,
+                    1 => LevelFilter::Info,
+                    2 => LevelFilter::Debug,
+                    _ => LevelFilter::Trace,
+                },
+            )
+            .level(match cli_args.log_other {
+                0 => LevelFilter::Warn,
+                1 => LevelFilter::Info,
+                2 => LevelFilter::Debug,
+                _ => LevelFilter::Trace,
+            })
+            .chain(stdout());
+
+        let config = match Self::_apply_config_file(&cli_args).await {
+            Ok(config) => {
+                let log_file = config.get_file_logger();
+                match log_file {
+                    Ok(log_file) => {
+                        if let Some(log_file) = log_file {
+                            Dispatch::new()
+                                .chain(log_stdout)
+                                .chain(log_file)
+                                .apply()
+                                .expect("multiple loggers not allowed");
+                        }
+                    }
+                    Err(e) => {
+                        // Fall back on the stdout logger
+                        log_stdout.apply().expect("multiple loggers not allowed");
+
+                        return Err(anyhow!(e));
+                    }
+                };
+                config
+            }
+            Err(e) => {
+                // Fall back on the stdout logger
+                log_stdout.apply().expect("multiple loggers not allowed");
+
+                return Err(e);
+            }
+        };
+
+        Ok(config)
     }
 
     fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
