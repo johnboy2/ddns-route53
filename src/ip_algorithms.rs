@@ -390,8 +390,11 @@ async fn get_plugin_output(
 
     fn try_read_data_as_text(data: &[u8]) -> Option<String> {
         if let Ok(r) = std::str::from_utf8(data) {
-            // UTF-8 BOM can be ignored (if present)
-            return Some(r.strip_prefix("\u{FEFF}").unwrap_or(r).to_owned());
+            if !r.chars().any(|c| c == '\x00') {
+                // UTF-8 BOM can be ignored (if present)
+                debug!("plugin output detected as UTF-8.");
+                return Some(r.strip_prefix("\u{FEFF}").unwrap_or(r).to_owned());
+            }
         }
 
         #[cfg(windows)]
@@ -408,18 +411,27 @@ async fn get_plugin_output(
                         // Found a UTF16-LE BOM; try to read everything after it.
                         // TODO: Move to String::from_utf16le() once it is out of nightly.
                         if let Ok(r) = utf16string::WStr::from_utf16le(&data[2..]) {
-                            return Some(r.to_utf8());
+                            if !r.chars().any(|c| c == '\x00') {
+                                debug!("plugin output detected as UTF-16-LE");
+                                return Some(r.to_utf8());
+                            }
                         }
                     } else if data.starts_with(b"\xFE\xFF") {
                         // Found a UTF16-BE BOM; try to read everything after it.
                         // TODO: Move to String::from_utf16be() once it is out of nightly.
                         if let Ok(r) = utf16string::WStr::from_utf16be(&data[2..]) {
-                            return Some(r.to_utf8());
+                            if !r.chars().any(|c| c == '\x00') {
+                                debug!("plugin output detected as UTF-16-BE");
+                                return Some(r.to_utf8());
+                            }
                         }
                     }
                 }
                 if let Ok(r) = utf16string::WStr::<byteorder::NativeEndian>::from_utf16(&data) {
-                    return Some(r.to_utf8());
+                    if !r.chars().any(|c| c == '\x00') {
+                        debug!("plugin output detected as UTF-16 (native endian)");
+                        return Some(r.to_utf8());
+                    }
                 }
             }
         }
