@@ -263,7 +263,7 @@ where
 
     let mut result = Vec::<T>::new();
     for line in body.as_str().lines() {
-        trace!("Received result: \"{line}\"");
+        trace!("Received result: {line:?}");
         let ip = match T::from_str(line) {
             Ok(result) => result,
             Err(e) => {
@@ -439,8 +439,9 @@ async fn get_plugin_output(
         None
     }
 
+    trace!("plugin output (binary): {stdout_content:?}");
     if let Some(stdout) = try_read_data_as_text(stdout_content.as_slice()) {
-        debug!("plugin output: \"{stdout}\"");
+        debug!("plugin output (text): {stdout:?}");
         if succeeded {
             Ok(stdout)
         } else {
