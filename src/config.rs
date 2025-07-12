@@ -134,7 +134,7 @@ enum AlgorithmSpecification {
 }
 
 impl Debug for AlgorithmSpecification {
-    // For debugging purposes, we need a concise description of each algorithm.
+    // For debugging purposes, we want a concise description of each algorithm with all the details.
     // Serializing to (compact) JSON gives us that.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         serde_json::to_string(&self)
@@ -150,8 +150,7 @@ impl Debug for AlgorithmSpecification {
 }
 
 impl Display for AlgorithmSpecification {
-    // The Display fmt() function only needs to make each algorithm
-    // identifiable; full details are NOT required.
+    // For display purposes, we want a *simple* description of each algorithm, without unnecessary details.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Self::DefaultPublicIp => f.write_str("default_public_ip"),
