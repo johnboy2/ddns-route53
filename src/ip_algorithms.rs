@@ -331,7 +331,7 @@ async fn get_plugin_output(
             }
         }
         StringOrStringVec::Vec(v) => {
-            if v.len() == 0 {
+            if v.len() == 0 || v[0].len() == 0 {
                 return Err(anyhow!("command cannot be empty"));
             }
             command_obj = Command::new(&v[0]);
