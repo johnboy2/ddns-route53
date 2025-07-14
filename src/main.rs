@@ -10,7 +10,7 @@ mod cli;
 mod config;
 mod ip_algorithms;
 
-use crate::addresses::{AddressRecords, Addresses};
+use crate::addresses::{Route53AddressRecords, Addresses};
 use crate::aws_route53::{
     get_resource_records, update_host_addresses_if_different, UpdateHostResult,
 };
@@ -40,7 +40,7 @@ async fn main() {
         local_set.spawn_local(async move { arc_config.get_ipv6_addresses().await })
     };
 
-    let fut_r53_addresses: JoinHandle<anyhow::Result<AddressRecords>> = {
+    let fut_r53_addresses: JoinHandle<anyhow::Result<Route53AddressRecords>> = {
         let arc_config = arc_config.clone();
         local_set.spawn_local(async move {
             let config = arc_config.as_ref();

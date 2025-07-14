@@ -11,13 +11,13 @@ pub struct Addresses {
     pub v6: HashSet<Ipv6Addr>,
 }
 
-pub struct AddressRecords {
+pub struct Route53AddressRecords {
     pub v4: Option<ResourceRecordSet>,
     pub v6: Option<ResourceRecordSet>,
 }
 
-impl From<&AddressRecords> for Addresses {
-    fn from(item: &AddressRecords) -> Self {
+impl From<&Route53AddressRecords> for Addresses {
+    fn from(item: &Route53AddressRecords) -> Self {
         let mut ipv4addr_set = HashSet::<Ipv4Addr>::new();
         item.v4.as_ref().map(|rrs| {
             for rr in rrs.resource_records() {

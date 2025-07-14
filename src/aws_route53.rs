@@ -16,7 +16,7 @@ use aws_types::region::Region;
 use log::debug;
 use tokio::time::{sleep, timeout};
 
-use crate::addresses::{AddressRecords, Addresses};
+use crate::addresses::{Route53AddressRecords, Addresses};
 use crate::config::Config;
 
 pub async fn get_client(
@@ -90,7 +90,7 @@ pub async fn get_resource_records(
     client: &Client,
     host_name: &String,
     route53_zone_id: &str,
-) -> anyhow::Result<AddressRecords> {
+) -> anyhow::Result<Route53AddressRecords> {
     // The `set_max_items(Some(2))` below IS SAFE, because we're only interested in 'A' and 'AAAA'
     // records -- which are sorted *before* any other record types.
     let response = client
@@ -129,7 +129,7 @@ pub async fn get_resource_records(
         }
     }
 
-    Ok(AddressRecords { v4, v6 })
+    Ok(Route53AddressRecords { v4, v6 })
 }
 
 fn _resource_record_set_matches_expected<IPTYPE>(
@@ -270,7 +270,7 @@ pub enum UpdateHostResult {
 pub async fn update_host_addresses_if_different(
     config: &Config,
     desired_addresses: &Addresses,
-    current_address_records: &AddressRecords,
+    current_address_records: &Route53AddressRecords,
 ) -> anyhow::Result<UpdateHostResult> {
     let changes = {
         let mut changes = Vec::<Change>::new();
