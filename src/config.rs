@@ -78,7 +78,19 @@ mod serde_encoding {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
+        
         Encoding::for_label(s.as_bytes())
+        .or_else(|| {
+            // encoding_rs seems to have trouble with some common UTF-16 aliases,
+            // so we give it a hand here with a few of our own, custom translations.
+            let s_lower = s.to_ascii_lowercase();
+            match s_lower.as_str() {
+                "utf16" => Encoding::for_label(b"utf-16"),
+                "utf16le" | "utf-16-le" => Encoding::for_label(b"utf-16le"),
+                "utf16be" | "utf-16-be" => Encoding::for_label(b"utf-16be"),
+                _ => None
+            }
+        })
         .map(|e| Some(e))
         .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
     }
