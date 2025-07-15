@@ -4,7 +4,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::{stdout, BufReader, Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
@@ -117,6 +116,44 @@ mod serde_url {
         S: Serializer,
     {
         serializer.serialize_str(url.as_str())
+    }
+}
+
+mod serde_levelfilter {
+    use std::str::FromStr;
+
+    use log::LevelFilter;
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<LevelFilter, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+
+        match LevelFilter::from_str(s.as_str()) {
+            Ok(level) => {
+                // Why disallow "trace" to log files? Because it leaks AWS secrets within the Client object.
+                // I briefly entertained the idea of a CLI flag to allow override this restriction, but decided against that
+                // on the grounds that enabling truly dumb behavior (i.e., knowingly leaking secrets into log files) is
+                // almost always unwise. (At least any console leaking that might occur is under control of the user who has
+                // those secrets already.)
+                if level == LevelFilter::Trace {
+                    Err(D::Error::custom("This level is not allowed for the log file. Use the \"-vvv\" CLI option to get trace-level logging to the console instead."))
+                } else {
+                    Ok(level)
+                }
+            }
+            Err(_) => Err(D::Error::custom("Unknown log level")),
+        }
+    }
+
+    pub fn serialize<S>(level: &LevelFilter, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer
+    {
+        serializer.serialize_str(level.as_str())
     }
 }
 
@@ -247,31 +284,6 @@ where
     }
 }
 
-pub fn deserialize_log_level<'de, D>(deserializer: D) -> Result<LevelFilter, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::Error;
-
-    let s = String::deserialize(deserializer)?;
-
-    match LevelFilter::from_str(s.as_str()) {
-        Ok(level) => {
-            // Why disallow "trace" to log files? Because it leaks AWS secrets within the Client object.
-            // I briefly entertained the idea of a CLI flag to allow override this restriction, but decided against that
-            // on the grounds that enabling truly dumb behavior (i.e., knowingly leaking secrets into log files) is
-            // almost always unwise. (At least any console leaking that might occur is under control of the user who has
-            // those secrets already.)
-            if level == LevelFilter::Trace {
-                Err(D::Error::custom("This level is not allowed for the log file. Use the \"-vvv\" CLI option to get trace-level logging to the console instead."))
-            } else {
-                Ok(level)
-            }
-        }
-        Err(_) => Err(D::Error::custom("Unknown log level")),
-    }
-}
-
 #[derive(Deserialize)]
 struct FileConfig {
     host_name: String,
@@ -319,13 +331,13 @@ struct FileConfig {
     log_file: Option<String>,
 
     #[serde(
-        deserialize_with = "deserialize_log_level",
+        with = "serde_levelfilter",
         default = "default_log_level"
     )]
     log_level: LevelFilter,
 
     #[serde(
-        deserialize_with = "deserialize_log_level",
+        with = "serde_levelfilter",
         default = "default_log_level_other"
     )]
     log_level_other: LevelFilter,
@@ -362,7 +374,7 @@ impl FileConfig {
     }
 }
 
-#[derive(Derivative)]
+#[derive(Derivative, Serialize)]
 #[derivative(Debug)]
 pub struct Config {
     pub host_name: String,
@@ -374,11 +386,16 @@ pub struct Config {
     ipv4_algorithms: Vec<AlgorithmSpecification>,
     ipv6_algorithms: Vec<AlgorithmSpecification>,
 
+    #[serde(skip_serializing)]
     pub route53_client: ::aws_sdk_route53::Client,
+
     pub route53_zone_id: String,
     pub route53_record_ttl: i64,
     log_file: Option<String>,
+
+    #[serde(with = "serde_levelfilter")]
     log_level: LevelFilter,
+    #[serde(with = "serde_levelfilter")]
     log_level_other: LevelFilter,
 }
 
