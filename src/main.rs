@@ -26,7 +26,7 @@ async fn main() {
         }
     };
 
-    trace!("{:?}", config);
+    trace!("Configuration: {}", serde_json::to_string(&config).unwrap());
     let arc_config = Rc::new(config);
 
     let local_set = LocalSet::new();
