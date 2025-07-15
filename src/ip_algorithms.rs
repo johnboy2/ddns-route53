@@ -10,9 +10,9 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{Encoding, UTF_8};
+use encoding_rs::{Encoding, mem::convert_latin1_to_utf8};
 use igd_next::{search_gateway, SearchOptions};
-use log::{debug, error, trace};
+use log::{debug, error, trace, warn};
 use mime::Mime;
 use netdev::{get_default_interface, Interface};
 use reqwest::{Client, ClientBuilder, Url};
@@ -187,6 +187,7 @@ async fn get_web_service_document(
     client: &Client,
     url: &Url,
     timeout: &Duration,
+    default_encoding: Option<&'static Encoding>
 ) -> anyhow::Result<String> {
     let request = client.get(url.clone()).timeout(*timeout).send();
     let response = request.await.context("error fetching url")?;
@@ -219,9 +220,23 @@ async fn get_web_service_document(
         .and_then(|value| value.parse::<Mime>().ok());
     let encoding_name = content_type
         .as_ref()
-        .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()))
-        .unwrap_or("utf-8");
-    let encoding = Encoding::for_label(encoding_name.as_bytes()).unwrap_or(UTF_8);
+        .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()));
+
+    let encoding = if let Some(name) = encoding_name {
+        let e = Encoding::for_label(name.as_bytes());
+        if e.is_none() {
+            Err(anyhow!("unknown encoding: \"{name}\""))?
+        }
+        debug!("Found encoding={name} from Content-Type header");
+        e
+    } else {
+        debug!("No Content-Type header found, or did not contain a charset");
+        match default_encoding {
+            Some(e) => debug!("Using configuration-provided default_encoding: {}", e.name()),
+            None => debug!("Using HTTP default encoding: iso-8859-1")
+        }
+        default_encoding
+    };
 
     let mut body_binary = Vec::<u8>::new();
     if content_length != 0 {
@@ -242,15 +257,25 @@ async fn get_web_service_document(
         body_binary.extend_from_slice(item.as_ref());
     }
 
-    // Undecodeable byte sequnces to get U+FFFD (replacement character). That's
-    // completely okay for us, since this function *should* only ever get back
-    // IP addresses (which are always ASCII -- and thus always decodeable).
-    let (text, _, _) = encoding.decode(body_binary.as_slice());
-
-    Ok(text.into_owned())
+    if let Some(e) = encoding {
+        let rr =
+            e.decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
+            .map(|s| s.into_owned())
+        ;
+        if rr.is_none() {
+            error!("web-service response could not be decoded; value: {:X?}", body_binary.as_slice());
+            return Err(anyhow!("failed to decode output with \"{}\"", e.name()));
+        }
+        Ok(rr.unwrap())
+    } else {
+        let mut buf = Vec::<u8>::with_capacity(body_binary.len() * 2);
+        let num_bytes = convert_latin1_to_utf8(body_binary.as_slice(), buf.as_mut_slice());
+        let rr = unsafe { String::from_raw_parts(buf.as_mut_ptr(), num_bytes, num_bytes) };
+        Ok(rr)
+    }
 }
 
-pub async fn get_web_service_ip<T>(url: &Url, timeout: &Duration) -> anyhow::Result<Vec<T>>
+pub async fn get_web_service_ip<T>(url: &Url, timeout: &Duration, default_encoding: Option<&'static Encoding>) -> anyhow::Result<Vec<T>>
 where
     T: IpAddressV4orV6,
     <T as FromStr>::Err: ToString,
@@ -259,11 +284,11 @@ where
         .as_ref()
         .context("failed to initialize web client")?;
 
-    let body = get_web_service_document(client, url, timeout).await?;
+    let body = get_web_service_document(client, url, timeout, default_encoding).await?;
 
     let mut result = Vec::<T>::new();
     for line in body.as_str().lines() {
-        trace!("Received result: {line:?}");
+        trace!("Received result: {}", serde_json::to_string(line)?);
         let ip = match T::from_str(line) {
             Ok(result) => result,
             Err(e) => {
@@ -295,9 +320,135 @@ pub enum StringOrStringVec {
     Vec(Vec<String>),
 }
 
+struct PluginEncoding<'a> {
+    data: &'a [u8],
+    encoding: &'static Encoding
+}
+
+impl<'a> PluginEncoding<'a> {
+    fn find_encoding(data: &'a [u8], caller_encoding: Option<&'static Encoding>, default_encoding_name: &str) -> Self {
+        if let Some(e) = caller_encoding {
+            debug!("Using configuration-specified encoding: {0}", e.name());
+            return Self {data, encoding: e};
+        }
+
+        #[cfg(windows)]
+        {
+            // If there is a NULL-byte near the start, assume UTF-16
+            let high_byte_idx = if cfg!(target_endian = "little") {1} else {0};
+            if high_byte_idx < data.len() && data[high_byte_idx] == 0 {
+                debug!("Found NULL-byte in output; using encoding: UTF-16");
+                return Self {data, encoding: Encoding::for_label(b"utf-16".as_slice()).unwrap()};
+            }
+
+            // If BOM-sniffing finds something, go with whatever it found
+            if let Some(r) = Encoding::for_bom(data) {
+                let e = r.0;
+                let d = &data[(r.1)..];
+                debug!("Found byte-order mark; using encoding: {}", e.name());
+                return Self {data: d, encoding: e};
+            }
+
+            // Try the (Windows) OEM code page
+            let code_page = unsafe { windows_sys::Win32::Globalization::GetACP() };
+            let encoding_name = match code_page {
+                // These conversions were extracted from the encoding_rs documentation
+                950 => "Big5",
+                951 => "Big5",
+                20932 => "EUC-JP",
+                949 => "EUC-KR",
+                936 => "GBK",
+                866 => "IBM866",
+                50220 => "ISO-2022-JP",
+                28603 => "ISO-8859-13",
+                28605 => "ISO-8859-15",
+                28592 => "ISO-8859-2",
+                28593 => "ISO-8859-3",
+                28594 => "ISO-8859-4",
+                28595 => "ISO-8859-5",
+                28596 => "ISO-8859-6",
+                28597 => "ISO-8859-7",
+                38598 => "ISO-8859-8-I",
+                28598 => "ISO-8859-8",
+                20866 => "KOI8-R",
+                21866 => "KOI8-U",
+                932 => "Shift_JIS",
+                1201 => "UTF-16BE",
+                1200 => "UTF-16LE",
+                65001 => "UTF-8",
+                54936 => "gb18030",
+                10000 => "macintosh",
+                1250 => "windows-1250",
+                1251 => "windows-1251",
+                1252 => "windows-1252",
+                1253 => "windows-1253",
+                1254 => "windows-1254",
+                1255 => "windows-1255",
+                1256 => "windows-1256",
+                1257 => "windows-1257",
+                1258 => "windows-1258",
+                874 => "windows-874",
+                10017 => "x-mac-cyrillic",
+                _ => ""
+            };
+            if let Some(encoding) = Encoding::for_label(encoding_name.as_bytes()) {
+                debug!("Using system OEM code-page ({code_page:0>3}) -> encoding: {}", encoding.name());
+                return Self {data, encoding};
+            } else {
+                warn!("System OEM code-page ({code_page:0>3}) is unsupported; trying {default_encoding_name} instead");
+            }
+        }
+        #[cfg(unix)]
+        {
+            // Use the first envvar to specify a codeset that we support
+            let vars_to_try = ["LC_ALL", "LC_CTYPE", "LANG"];
+            for var_to_try in vars_to_try.iter() {
+                if let Some(os_value) = std::env::var_os(var_to_try) {
+                    let os_value_bytes = os_value.as_os_str().as_encoded_bytes();
+                    if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
+                        let codeset_name = if let Some(length) = os_value_bytes[start_offset..].iter().position(|b| *b == b'@') {
+                            &os_value_bytes[start_offset..(start_offset + length)]
+                        }
+                        else {
+                            &os_value_bytes[start_offset..]
+                        };
+
+                        if codeset_name.len() == 0 {
+                            continue;
+                        }
+
+                        if let Some(encoding) = Encoding::for_label(codeset_name) {
+                            debug!(
+                                "Found env:{var_to_try}='{}'; using encoding: {}",
+                                String::from_utf8_lossy(os_value_bytes),
+                                encoding.name()
+                            );
+                            return Self { data, encoding };
+                        }
+
+                        debug!("Found env:{var_to_try}='{}'", String::from_utf8_lossy(os_value_bytes));
+                        warn!(
+                            "Codeset ({0}) is unsupported; ignoring",
+                            String::from_utf8_lossy(codeset_name)
+                        );
+                    }
+                }
+            }
+            debug!("No usable system locale codeset found; trying {0} instead", default_encoding_name);
+        }
+
+        Self {
+            data,
+            encoding: Encoding::for_label(default_encoding_name.as_bytes())
+                .expect(format!("failed to load default encoding ({default_encoding_name})").as_str())
+        }
+    }
+}
+
 async fn get_plugin_output(
     command: &StringOrStringVec,
     timeout: &Duration,
+    encoding: Option<&'static Encoding>
 ) -> anyhow::Result<String> {
     let mut command_obj: Command;
 
@@ -388,82 +539,40 @@ async fn get_plugin_output(
         .await
         .expect("failed to unwrap stdout buffer content")?;
 
-    fn try_read_data_as_text(data: &[u8]) -> Option<String> {
-        if let Ok(r) = std::str::from_utf8(data) {
-            if !r.chars().any(|c| c == '\x00') {
-                // UTF-8 BOM can be ignored (if present)
-                debug!("plugin output detected as UTF-8.");
-                return Some(r.strip_prefix("\u{FEFF}").unwrap_or(r).to_owned());
+    let stdout_decoded = {
+        if stdout_content.len() == 0 {
+            String::new()
+        }
+        else {
+            let e = PluginEncoding::find_encoding(stdout_content.as_slice(), encoding, "UTF-8");
+            if let Some(r) = e.encoding.decode_without_bom_handling_and_without_replacement(e.data) {
+                r.into_owned()
+            }
+            else {
+                error!("plugin output could not be decoded; value: {stdout_content:X?}");
+                return Err(anyhow!("failed to decode plugin output (encoding=\"{0}\")", e.encoding.name()));
             }
         }
-
-        #[cfg(windows)]
-        {
-            // Windows programs' stdout have very little in the way of standards for their text
-            // output, and can be UTF-8, UTF-16, ANSI code pages, or really anything at all. Since
-            // we expect IP address output (which only requires ASCII characters), UTF-8 and code
-            // page output would both parse the same -- if that's what we got. If we got past that
-            // point without matching, then the data is most likely some form of UTF-16.
-            if data.len() & 1 == 0 {
-                // Even (not odd) number of bytes
-                if data.len() >= 2 {
-                    if data.starts_with(b"\xFF\xFE") {
-                        // Found a UTF16-LE BOM; try to read everything after it.
-                        // TODO: Move to String::from_utf16le() once it is out of nightly.
-                        if let Ok(r) = utf16string::WStr::from_utf16le(&data[2..]) {
-                            if !r.chars().any(|c| c == '\x00') {
-                                debug!("plugin output detected as UTF-16-LE");
-                                return Some(r.to_utf8());
-                            }
-                        }
-                    } else if data.starts_with(b"\xFE\xFF") {
-                        // Found a UTF16-BE BOM; try to read everything after it.
-                        // TODO: Move to String::from_utf16be() once it is out of nightly.
-                        if let Ok(r) = utf16string::WStr::from_utf16be(&data[2..]) {
-                            if !r.chars().any(|c| c == '\x00') {
-                                debug!("plugin output detected as UTF-16-BE");
-                                return Some(r.to_utf8());
-                            }
-                        }
-                    }
-                }
-                if let Ok(r) = utf16string::WStr::<byteorder::NativeEndian>::from_utf16(&data) {
-                    if !r.chars().any(|c| c == '\x00') {
-                        debug!("plugin output detected as UTF-16 (native endian)");
-                        return Some(r.to_utf8());
-                    }
-                }
-            }
-        }
-
-        None
+    };
+    trace!("plugin output: {}", serde_json::to_string(stdout_decoded.as_str())?);
+    if succeeded {
+        return Ok(stdout_decoded);
     }
-
-    trace!("plugin output (binary): {stdout_content:?}");
-    if let Some(stdout) = try_read_data_as_text(stdout_content.as_slice()) {
-        debug!("plugin output (text): {stdout:?}");
-        if succeeded {
-            Ok(stdout)
-        } else {
-            Err(anyhow!("plugin failed"))
-        }
-    } else {
-        // For troubleshooting purposes, we should still log what we got -- even though it was
-        // undecodeable. So log it as hex-encoded bytes.
-        error!("plugin output could not be decoded; value: {stdout_content:X?}");
-        Err(anyhow!("failed to decode plugin output"))
-    }
+    else {
+        return Err(anyhow!("plugin failed"));
+    } 
 }
 
 pub async fn get_plugin_ip<T>(
     command: &StringOrStringVec,
     timeout: &Duration,
+    encoding: Option<&'static Encoding>
 ) -> anyhow::Result<Vec<T>>
 where
     T: IpAddressV4orV6,
     <T as FromStr>::Err: ToString,
 {
-    let output = get_plugin_output(command, timeout).await?;
+    let output = get_plugin_output(command, timeout, encoding).await?;
 
     let mut result = Vec::<T>::new();
     for line in output.as_str().lines() {

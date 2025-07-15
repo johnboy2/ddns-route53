@@ -33,8 +33,7 @@ tokio-stream = "0.1"
 toml = "0.8"
 
 [target.'cfg(windows)'.dependencies]
-byteorder = "1.5"
-utf16string = "0.2"
+windows-sys = { version = "0.60", features = ["Win32_Globalization"] }
 
 [profile.dev]
 opt-level = 1  # Use only basic optimizations

@@ -12,6 +12,7 @@ use anyhow::{anyhow, Context};
 use derivative::Derivative;
 use fern::Dispatch;
 use humantime::format_rfc3339_seconds;
+use encoding_rs::Encoding;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
 use log::{debug, error, warn, LevelFilter};
 use regex::Regex;
@@ -68,6 +69,34 @@ mod serde_duration_f64 {
     }
 }
 
+mod serde_encoding {
+    use encoding_rs::Encoding;
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<&'static Encoding>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Encoding::for_label(s.as_bytes())
+        .map(|e| Some(e))
+        .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
+    }
+
+    pub fn serialize<S>(encoding: &Option<&'static Encoding>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(e) = encoding {
+            serializer.serialize_str(e.name())
+        }
+        else {
+            serializer.serialize_none()
+        }
+    }
+}
+
 mod serde_url {
     use reqwest::Url;
     use serde::de::Error;
@@ -118,6 +147,9 @@ enum AlgorithmSpecification {
             default = "default_algo_timeout"
         )]
         timeout: Duration,
+
+        #[serde(default, with = "serde_encoding")]
+        default_encoding: Option<&'static Encoding>
     },
 
     #[serde(rename = "plugin")]
@@ -130,6 +162,9 @@ enum AlgorithmSpecification {
             default = "default_algo_timeout"
         )]
         timeout: Duration,
+
+        #[serde(default, with = "serde_encoding")]
+        encoding: Option<&'static Encoding>
     },
 }
 
@@ -155,10 +190,11 @@ impl Display for AlgorithmSpecification {
         match self {
             Self::DefaultPublicIp => f.write_str("default_public_ip"),
             Self::InternetGatewayProtocol { timeout: _ } => write!(f, "internet_gateway_protocol"),
-            Self::WebService { url, timeout: _ } => write!(f, "web_service:\"{}\"", url.as_str()),
+            Self::WebService { url, timeout: _, default_encoding: _ } => write!(f, "web_service:\"{}\"", url.as_str()),
             Self::Plugin {
                 command,
                 timeout: _,
+                encoding: _
             } => {
                 const MAX_STR_LEN: usize = 32;
                 match command {
@@ -526,11 +562,11 @@ impl Config {
                 AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
                     crate::ip_algorithms::get_igd_ipv4(timeout).await
                 }
-                AlgorithmSpecification::WebService { url, timeout } => {
-                    crate::ip_algorithms::get_web_service_ip::<Ipv4Addr>(url, timeout).await
+                AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
+                    crate::ip_algorithms::get_web_service_ip::<Ipv4Addr>(url, timeout, *default_encoding).await
                 }
-                AlgorithmSpecification::Plugin { command, timeout } => {
-                    crate::ip_algorithms::get_plugin_ip::<Ipv4Addr>(command, timeout).await
+                AlgorithmSpecification::Plugin { command, timeout, encoding } => {
+                    crate::ip_algorithms::get_plugin_ip::<Ipv4Addr>(command, timeout, *encoding).await
                 }
             };
 
@@ -572,11 +608,11 @@ impl Config {
                         "internet_gateway_device algorithm is not implemented for IPv6"
                     ))
                 }
-                AlgorithmSpecification::WebService { url, timeout } => {
-                    crate::ip_algorithms::get_web_service_ip::<Ipv6Addr>(url, timeout).await
+                AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
+                    crate::ip_algorithms::get_web_service_ip::<Ipv6Addr>(url, timeout, *default_encoding).await
                 }
-                AlgorithmSpecification::Plugin { command, timeout } => {
-                    crate::ip_algorithms::get_plugin_ip::<Ipv6Addr>(command, timeout).await
+                AlgorithmSpecification::Plugin { command, timeout, encoding } => {
+                    crate::ip_algorithms::get_plugin_ip::<Ipv6Addr>(command, timeout, *encoding).await
                 }
             };
 
