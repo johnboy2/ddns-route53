@@ -36,7 +36,7 @@ pub trait IpAddressV4orV6: Copy + Debug + Display + Eq + FromStr + Hash + Send {
 }
 
 impl IpAddressV4orV6 for Ipv4Addr {
-    // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
+    // Adapted from https://doc.rust-lang.org/1.87.0/src/core/net/ip_addr.rs.html#836-855
     // (The std::net::Ipv4Addr.is_global() function requires an unstable std library; hence we made our own instead.)
     fn is_global(&self) -> bool {
         !(self.octets()[0] == 0 // "This network"
@@ -67,7 +67,7 @@ impl IpAddressV4orV6 for Ipv4Addr {
 }
 
 impl IpAddressV4orV6 for Ipv6Addr {
-    // Adapted from https://doc.rust-lang.org/1.80.1/src/core/net/ip_addr.rs.html#763-779
+    // Adapted from https://doc.rust-lang.org/1.87.0/src/core/net/ip_addr.rs.html#1595-1630
     // (The std::net::Ipv6Addr.is_global() function requires an unstable std library; hence we made our own instead.)
     fn is_global(&self) -> bool {
         !(self.is_unspecified()
@@ -91,15 +91,17 @@ impl IpAddressV4orV6 for Ipv6Addr {
                 || matches!(self.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
                 // ORCHIDv2 (`2001:20::/28`)
                 // Drone Remote ID Protocol Entity Tags (DETs) Prefix (`2001:30::/28`)`
-                || matches!(self.segments(), [0x2001, b, _, _, _, _, _, _] if (0x20..=0x3F).contains(&b))
+                || matches!(self.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
             ))
         // 6to4 (`2002::/16`) – it's not explicitly documented as globally reachable,
         // IANA says N/A.
         || matches!(self.segments(), [0x2002, _, _, _, _, _, _, _])
         || (
             // ip.is_documentation()
-            (self.segments()[0] == 0x2001) && (self.segments()[1] == 0xdb8)
+            matches!(self.segments(), [0x2001, 0xdb8, ..] | [0x3fff, 0..=0x0fff, ..])
         )
+        // Segment Routing (SRv6) SIDs (`5f00::/16`)
+        || matches!(self.segments(), [0x5f00, ..])
         || (
             // ip.is_unique_local()
             (self.segments()[0] & 0xfe00) == 0xfc00
