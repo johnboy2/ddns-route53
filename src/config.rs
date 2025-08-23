@@ -617,7 +617,10 @@ impl Config {
             };
         }
 
-        warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        if algos.len() != 0 {
+            warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        }
+
         HashSet::<Ipv4Addr>::new()
     }
 
@@ -663,7 +666,10 @@ impl Config {
             };
         }
 
-        warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        if algos.len() != 0 {
+            warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        }
+
         HashSet::<Ipv6Addr>::new()
     }
 }
