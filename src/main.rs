@@ -67,7 +67,7 @@ async fn main() {
     {
         Ok(r) => r,
         Err(e) => {
-            error!("{}", e);
+            error!("{:#}", e);
             return;
         }
     };
@@ -91,7 +91,7 @@ async fn main() {
             }
         }
         Err(e) => {
-            error!("Update failed: {e}")
+            error!("Update failed: {e:#}")
         }
     };
 }
