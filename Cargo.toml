@@ -19,11 +19,11 @@ derivative = "2.2"
 encoding_rs = "0.8"
 fern = "0.7"
 humantime = "2.1"
-idna = "1.0"
+idna = "1.1"
 igd-next = "0.16"
 log = "0.4"
 mime = "0.3"
-netdev = "0.35"
+netdev = "0.37"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["http2","rustls-tls-native-roots","stream"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -33,7 +33,7 @@ tokio-stream = "0.1"
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_Globalization"] }
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 
 [profile.dev]
 opt-level = 1  # Use only basic optimizations
