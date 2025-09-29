@@ -1,0 +1,17 @@
+# Timer unit for invoking the ddns-route53 updater
+# Location: /etc/systemd/system/ddns-route53.timer
+
+[Unit]
+Description=Timer for ddns-route53.service
+Requires=ddns-route53.service
+
+[Timer]
+# Run a few minutes after boot-up, regardless of the periodic schedule
+OnBootSec=5min
+
+# Run every few hours throughout the day -- but only during waking hours
+OnCalendar=*-*-* 07,11,15,19,23:07:00
+Unit=ddns-route53.service
+
+[Install]
+WantedBy=timers.target
