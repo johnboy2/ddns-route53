@@ -15,7 +15,6 @@ use humantime::format_rfc3339_seconds;
 use encoding_rs::Encoding;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
 use log::{debug, error, warn, LevelFilter};
-use regex::Regex;
 use reqwest::Url;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -78,21 +77,25 @@ mod serde_encoding {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        let sb = s.trim_ascii().as_bytes();
-        
-        // encoding_rs seems not to recognize some common UTF-16 aliases, so we
-        // give it a hand here with a few of our own, custom translations.
-        let sb: &[u8] = match sb {
-            b"utf16" => b"utf-16",
-            b"utf16le" | b"utf-16-le" => b"utf-16le",
-            b"utf16be" | b"utf-16-be" => b"utf-16be",
-            _ => sb
-        };
+        if let Some(s) = Option::<String>::deserialize(deserializer)? {
+            let sb = s.trim_ascii().as_bytes();
+            
+            // encoding_rs seems not to recognize some common UTF-16 aliases, so we
+            // give it a hand here with a few of our own, custom translations.
+            let sb: &[u8] = match sb {
+                b"utf16" => b"utf-16",
+                b"utf16le" | b"utf-16-le" => b"utf-16le",
+                b"utf16be" | b"utf-16-be" => b"utf-16be",
+                _ => sb
+            };
 
-        Encoding::for_label(sb)
-        .map(|e| Some(e))
-        .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
+            Encoding::for_label(sb)
+            .map(|e| Some(e))
+            .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
+        }
+        else {
+            Ok(None)
+        }
     }
 
     pub fn serialize<S>(encoding: &Option<&'static Encoding>, serializer: S) -> Result<S::Ok, S::Error>
@@ -410,23 +413,26 @@ pub struct Config {
     log_level_other: LevelFilter,
 }
 
+
+fn normalize_host_name(host_name: &str) -> anyhow::Result<String> {
+    let mut name_lower_idna =
+        domain_to_ascii_cow(host_name.as_bytes(), AsciiDenyList::URL)
+            .map(|s| s.into_owned())
+            .context("invalid hostname")?;
+
+    Config::validate_idna_host_name(name_lower_idna.as_str())
+        .context("invalid hostname")?;
+    if !name_lower_idna.ends_with(".") {
+        name_lower_idna += ".";
+    }
+    Ok(name_lower_idna)
+}
+
 impl Config {
     async fn _apply_config_file(cli_args: &Args) -> anyhow::Result<Self> {
         let config_file = FileConfig::load(&cli_args.config_path)?;
 
-        let host_name_normalized = {
-            let mut name_lower_idna =
-                domain_to_ascii_cow(config_file.host_name.as_bytes(), AsciiDenyList::URL)
-                    .map(|s| s.into_owned())
-                    .context("invalid hostname")?;
-
-            Config::validate_idna_host_name(name_lower_idna.as_str())
-                .context("invalid hostname")?;
-            if !name_lower_idna.ends_with(".") {
-                name_lower_idna += ".";
-            }
-            name_lower_idna
-        };
+        let host_name_normalized = normalize_host_name(config_file.host_name.as_ref())?;
 
         for ipv6_algo in &config_file.ipv6_algorithms {
             match ipv6_algo {
@@ -540,14 +546,51 @@ impl Config {
     }
 
     fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
-        let ptn = Regex::new("^[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9](?:\\.[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])*\\.?$")
-            .expect("hard-coded regex should always be valid")
-        ;
-        if ptn.is_match(name) {
-            Ok(())
-        } else {
-            Err(anyhow!("invalid host name: \"{name}\""))
+        'outer: loop {
+            if name.is_empty() || 255 < name.len() { break; }
+
+            let mut itr = name.chars();
+            let mut label_len = 0;
+            let mut last_ch;
+
+            loop {
+                if let Some(ch) = itr.next() {
+                    match ch {
+                        'a'..='z' | 'A'..='Z' | '0'..='9' => {},
+                        _ => { break 'outer; }
+                    }
+                    last_ch = ch;
+                    label_len += 1;
+                }
+                else {
+                    // Since we know the host-name wasn't completely empty, having
+                    // nothing after a dot (separator) means it was a trailing dot.
+                    // That is OK.
+                    return Ok(());
+                }
+
+                loop {
+                    if let Some(ch) = itr.next() {
+                        match ch {
+                            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {},
+                            '.' if last_ch != '-' => { break; },
+                            _ => { break 'outer; }
+                        }
+                        last_ch = ch;
+                        label_len += 1;
+                        if 64 <= label_len { break 'outer; }
+                    } 
+                    else if last_ch == '-' {
+                        break 'outer;
+                    }
+                    else {
+                        return Ok(());
+                    }
+                }
+            }
         }
+        
+        Err(anyhow!("invalid host name: \"{name}\""))
     }
 
     pub fn get_file_logger(&self) -> Result<Option<fern::Dispatch>, String> {
@@ -670,5 +713,259 @@ impl Config {
         }
 
         HashSet::<Ipv6Addr>::new()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize, Serialize, Debug)]
+    struct SerdeDuration {
+        #[serde(with = "serde_duration_f64")]
+        timeout: Duration
+    }
+
+    #[test]
+    fn test_serialize_duration_to_json() {
+        let test_struct = SerdeDuration {timeout: Duration::from_secs_f64(1.5)};
+        let maybe_json = serde_json::to_string(&test_struct);
+        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
+        let json = maybe_json.unwrap();
+        assert_eq!(json.as_str(), "{\"timeout\":1.5}");
+    }
+
+
+    #[test]
+    fn test_parse_negative_duration_from_json() {
+        let json: &str = "{\"timeout\": -1}";
+        let maybe_struct = serde_json::from_str::<SerdeDuration>(json);
+        assert!(maybe_struct.is_err(), "struct: {:?}", maybe_struct.unwrap());
+        let err = maybe_struct.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.starts_with("value cannot be negative: "), "{:?}", msg);
+    }
+
+    
+    #[derive(Deserialize, Serialize, Debug)]
+    struct SerdeEncoding {
+        #[serde(with = "serde_encoding")]
+        encoding: Option<&'static Encoding>
+    }
+
+    #[test]
+    fn test_serialize_encoding_utf8() {
+        let test_struct = SerdeEncoding { encoding: Some(encoding_rs::UTF_8) };
+        let maybe_json = serde_json::to_string(&test_struct);
+        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
+        let json = maybe_json.unwrap();
+        assert_eq!(json.as_str(), "{\"encoding\":\"UTF-8\"}");
+    }
+
+    #[test]
+    fn test_serialize_encoding_none() {
+        let test_struct = SerdeEncoding { encoding: None };
+        let maybe_json = serde_json::to_string(&test_struct);
+        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
+        let json = maybe_json.unwrap();
+        assert_eq!(json.as_str(), "{\"encoding\":null}");
+    }
+
+    #[test]
+    fn test_deserialize_encoding_utf8() {
+        let json: &str = "{\"encoding\": \"utf-8\"}";
+        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
+        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+        let result = maybe_struct.unwrap();
+        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", json);
+
+        let json: &str = "{\"encoding\": \"UTF-8\"}";
+        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
+        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+        let result = maybe_struct.unwrap();
+        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", json);
+
+        let json: &str = "{\"encoding\": \"utf8\"}";
+        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
+        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+        let result = maybe_struct.unwrap();
+        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", json);
+    }
+
+    #[test]
+    fn test_deserialize_encoding_none() {
+        let json: &str = "{\"encoding\": null}";
+        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
+        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+        let result = maybe_struct.unwrap();
+        assert_eq!(result.encoding, None, "{:?}", json);
+    }
+
+
+    #[derive(Deserialize, Serialize, Debug)]
+    struct SerdeUrl {
+        #[serde(with = "serde_url")]
+        url: Url
+    }
+
+    #[test]
+    fn test_serialize_url() {
+        let test_struct = SerdeUrl { url: Url::parse("https://www.google.com/").unwrap() };
+        let maybe_json = serde_json::to_string(&test_struct);
+        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
+        let json = maybe_json.unwrap();
+        assert_eq!(json.as_str(), "{\"url\":\"https://www.google.com/\"}");
+    }
+
+    #[test]
+    fn test_deserialize_url() {
+        let json: &str = "{\"url\": \"http://localhost/\"}";
+        let maybe_struct = serde_json::from_str::<SerdeUrl>(json);
+        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+        let result = maybe_struct.unwrap();
+        assert_eq!(result.url, Url::parse("http://localhost/").unwrap(), "{:?}", json);
+    }
+
+
+    #[derive(Deserialize, Serialize, Debug)]
+    struct SerdeLevelFilter {
+        #[serde(with = "serde_levelfilter")]
+        level: LevelFilter
+    }
+
+    #[test]
+    fn test_level_filter() {
+        let tests = [
+            (LevelFilter::Error, "{\"level\":\"ERROR\"}", true),
+            (LevelFilter::Warn, "{\"level\":\"WARN\"}", true),
+            (LevelFilter::Info, "{\"level\":\"INFO\"}", true),
+            (LevelFilter::Debug, "{\"level\":\"DEBUG\"}", true),
+            (LevelFilter::Trace, "{\"level\":\"TRACE\"}", false),
+        ];
+        for (input, expected, deser_ok) in tests {
+            let test_struct = SerdeLevelFilter { level: input };
+            let maybe_json = serde_json::to_string(&test_struct);
+            assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
+            let json = maybe_json.unwrap();
+            assert_eq!(json.as_str(), expected);
+
+            let maybe_struct = serde_json::from_str::<SerdeLevelFilter>(expected);
+            if deser_ok {
+                assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+                let result = maybe_struct.unwrap();
+                assert_eq!(result.level, input, "{:?}", expected);
+            }
+            else {
+                assert!(maybe_struct.is_err(), "value: {:?}", expected);
+                let err = maybe_struct.unwrap_err();
+                let msg = err.to_string();
+                assert!(msg.starts_with("This level is not allowed for the log file."), "value={:?}, msg={:?}", expected, msg);
+            }
+        }
+    }
+
+
+    #[derive(Deserialize, Debug)]
+    struct SerdeOptionString {
+        #[serde(deserialize_with = "deserialize_option_string", default)]
+        value: Option<String>
+    }
+
+    #[test]
+    fn test_deserialize_option_string() {
+        let tests = &[
+            ("{\"value\":null}", None),
+            ("{\"value\":\"\"}", None),
+            ("{\"value\":\"str\"}", Some(String::from("str"))),
+        ];
+        for (json, expected) in tests {
+            let maybe_struct = serde_json::from_str::<SerdeOptionString>(*json);
+            assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+            let result = maybe_struct.unwrap();
+            assert_eq!(result.value, *expected, "{:?}", *expected);
+        }
+    }
+
+
+    #[derive(Deserialize, Debug)]
+    struct SerdeTtl {
+        #[serde(deserialize_with = "deserialize_dns_ttl", default)]
+        value: i64
+    }
+
+    #[test]
+    fn test_deserialize_dns_ttl() {
+        let tests = &[
+            (format!("{{\"value\":{0}}}", TTL_MIN), Some(TTL_MIN)),
+            (format!("{{\"value\":{0}}}", TTL_MAX), Some(TTL_MAX)),
+            (format!("{{\"value\":{0}}}", TTL_MIN - 1), None),
+            (format!("{{\"value\":{0}}}", TTL_MAX + 1), None),
+        ];
+        for (json, expected) in tests {
+            let maybe_struct = serde_json::from_str::<SerdeTtl>((*json).as_str());
+            if let Some(expected) = *expected {
+                assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+                let result = maybe_struct.unwrap();
+                assert_eq!(result.value, expected, "{:?}", expected);
+            }
+            else {
+                assert!(maybe_struct.is_err(), "value: {:?}", maybe_struct.unwrap());
+                let err = maybe_struct.unwrap_err();
+                let msg = err.to_string();
+                assert!(msg.starts_with("DNS TTL value must be in range "), "json={:?}, msg={:?}", (*json).as_str(), msg.as_str());
+            }
+        }
+    }
+
+
+    #[test]
+    fn test_validate_idna_host_name() {
+        let tests = [
+            ("localhost", true),
+            ("www.google.com", true),
+            ("domain.", true),
+            ("xn--jxalpdlp.test", true),
+
+            (".", false),
+            ("-example", false),
+            ("example-", false),
+            ("example.-test", false),
+            ("example.-test.", false),
+            ("example.test-", false),
+            ("example.test-.", false),
+            ("*.wildcard.domain", false),
+            ("*.wildcard.domain.", false),
+            ("wildcard.*.domain", false),
+            ("123456789012345678901234567890123456789012345678901234567890123", true),
+            ("1234567890123456789012345678901234567890123456789012345678901234", false)
+        ];
+        for (host_name, expect_valid) in tests {
+            let result= Config::validate_idna_host_name(host_name);
+            if expect_valid {
+                assert!(result.is_ok(), "err: {:?}", result.unwrap_err());
+            }
+            else {
+                assert!(result.is_err(), "host_name: {:?}", host_name);
+                let err = result.unwrap_err();
+                let msg = err.to_string();
+                assert!(msg.starts_with("invalid host name: "));
+            }
+        }
+    }
+
+
+    #[test]
+    fn test_normalize_host_name() {
+        let tests = [
+            ("example.com", "example.com."),
+            ("EXAMPLE.COM", "example.com."),
+            ("España.Example.Com", "xn--espaa-rta.example.com.")
+        ];
+
+        for (host_name, expected_normlization) in tests {
+            let result = normalize_host_name(host_name).unwrap();
+            assert_eq!(result, expected_normlization, "{:?}", host_name);
+        }
     }
 }
