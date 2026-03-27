@@ -8,7 +8,6 @@ use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use derivative::Derivative;
 use fern::Dispatch;
 use humantime::format_rfc3339_seconds;
 use encoding_rs::Encoding;
@@ -385,8 +384,7 @@ impl FileConfig {
     }
 }
 
-#[derive(Derivative, Serialize)]
-#[derivative(Debug)]
+#[derive(Serialize)]
 pub struct Config {
     pub host_name: String,
     pub host_name_normalized: String,
