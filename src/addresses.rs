@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: [MIT] OR [Apache-2.0]
+
 use std::collections::HashSet;
 use std::convert::From;
 use std::net::{Ipv4Addr, Ipv6Addr};

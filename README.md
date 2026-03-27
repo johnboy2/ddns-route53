@@ -130,3 +130,5 @@ If you want to run it periodically, you can use a third-party scheduler to do so
 ## License
 
 [MIT](https://opensource.org/license/mit) or [Apache-2.0](https://opensource.org/license/apache-2-0) at the user's choice.
+
+SPDX-License-Identifier: [MIT] OR [Apache-2.0]

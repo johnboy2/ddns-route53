@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: [MIT] OR [Apache-2.0]
+
 use core::str;
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};

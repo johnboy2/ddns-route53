@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: [MIT] OR [Apache-2.0]
+
 use std::cmp::Eq;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
