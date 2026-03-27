@@ -7,7 +7,7 @@ edition = "2021"
 authors = ["john@jnelson.ca"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/johnboy2/ddns-route53"
-rust-version = "1.80"  # Required for std::sync::LazyLock
+rust-version = "1.91"  # Required for AWS dependencies
 
 [dependencies]
 anyhow = "1.0"
@@ -19,17 +19,17 @@ encoding_rs = "0.8"
 fern = "0.7"
 humantime = "2.1"
 idna = "1.1"
-igd-next = "0.16"
+igd-next = "0.17"
 log = "0.4"
 mime = "0.3"
-netdev = "0.37"
+netdev = "0.41"
 regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["http2","stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["http2","stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["macros","process","rt","time"] }
 tokio-stream = "0.1"
-toml = "0.9"
+toml = "1.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
