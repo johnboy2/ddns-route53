@@ -714,6 +714,41 @@ impl Config {
 
         HashSet::<Ipv6Addr>::new()
     }
+
+    #[cfg(test)]
+    pub fn build_test_config(
+        host_name: &str,
+        update_poll_interval: Duration,
+        update_timeout: Duration,
+        update_if_different: bool,
+        route53_record_ttl: i64
+    ) -> Self {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap()
+        ;
+        let r53client = async_runtime.block_on(
+            crate::aws_route53::get_client(&None, &None, &None, &None)
+        );
+
+        Self {
+            host_name: host_name.to_owned(),
+            host_name_normalized: normalize_host_name(host_name).unwrap(),
+            update_poll_interval,
+            update_timeout,
+            update_if_different,
+            ipv4_algorithms: vec!(),
+            ipv6_algorithms: vec!(),
+            route53_client: r53client,
+            route53_zone_id: "Z-NOT-A-ZONE-ID".to_owned(),
+            route53_record_ttl,
+            log_file: None,
+            log_level: LevelFilter::Off,
+            log_level_other: LevelFilter::Off
+        }
+    }
 }
 
 

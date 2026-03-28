@@ -134,7 +134,7 @@ pub async fn get_resource_records(
     Ok(Route53AddressRecords { v4, v6 })
 }
 
-fn _resource_record_set_matches_expected<IPTYPE>(
+fn resource_record_set_matches_expected<IPTYPE>(
     rrs: &ResourceRecordSet,
     config: &Config,
     desired_addresses: &HashSet<IPTYPE>,
@@ -230,7 +230,7 @@ where
             changes_added = true;
         }
     } else if !current_address_records.as_ref().is_some_and(|rrs| {
-        _resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix)
+        resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix)
     }) {
         debug!("{log_prefix}: adding UPSERT");
         let mut v = Vec::<ResourceRecord>::with_capacity(desired_addresses.len());
@@ -350,4 +350,243 @@ pub async fn update_host_addresses_if_different(
     }
 
     return Ok(UpdateHostResult::UpdateSuccessful);
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+    use aws_sdk_route53::types::{AliasTarget, CidrRoutingConfig, GeoLocation, ResourceRecordSetFailover};
+    use super::*;
+
+    #[test]
+    fn test_host_in_domain() {
+        let tests = [
+            ("example.com", "example.com"),
+            ("example.com", "com"),
+            ("www.example.com", "com"),
+            ("a.b.c.d.e.example.com", "example.com"),
+            ("www.example.com", "example.com"),
+            ("example.com", "EXAMPLE.COM"),
+            ("example.com", "COM"),
+            ("www.example.com", "COM"),
+            ("www.example.com", "EXAMPLE.COM"),
+        ];
+        for (hostname, domain) in tests {
+            assert!(host_is_in_domain(hostname, domain), "host=\"{0}\", domain=\"{1}\"", hostname, domain);
+        }
+    }
+
+    #[test]
+    fn test_host_not_in_domain() {
+        let tests = [
+            ("com", "example.com"),
+            ("wwwwww.example.com", "www.example.com"),
+            ("myexample.com", "example.com"),
+            ("www.example.com", "some_domain.org")
+        ];
+        for (hostname, domain) in tests {
+            assert!(!host_is_in_domain(hostname, domain), "host=\"{0}\", domain=\"{1}\"", hostname, domain);
+        }
+    }
+
+    #[test]
+    fn test_rrset_matches_expected() {
+        let test_config = Config::build_test_config(
+            "example.com",
+            Duration::from_secs(1),
+            Duration::from_secs(100),
+            false,
+            60i64
+        );
+
+        let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
+        let test_ips_set =
+            test_ip_strs
+            .iter()
+            .map(|s| Ipv4Addr::from_str(*s)
+            .unwrap())
+            .collect::<HashSet::<_>>()
+        ;
+
+        let rrs = ResourceRecordSet::builder()
+            .name(test_config.host_name.clone())
+            .r#type(RrType::A)
+            .ttl(test_config.route53_record_ttl)
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
+            .build()
+            .unwrap()
+        ;
+
+        assert!(resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+    }
+
+    #[test]
+    fn test_rrset_mismatch_for_ttl() {
+        let test_config = Config::build_test_config(
+            "example.com",
+            Duration::from_secs(1),
+            Duration::from_secs(100),
+            false,
+            60i64
+        );
+
+        let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
+        let test_ips_set =
+            test_ip_strs
+            .iter()
+            .map(|s| Ipv4Addr::from_str(*s)
+            .unwrap())
+            .collect::<HashSet::<_>>()
+        ;
+
+        // First test with a "slightly wrong" TTL
+        let rrs = ResourceRecordSet::builder()
+            .name(test_config.host_name.clone())
+            .r#type(RrType::A)
+            .ttl(test_config.route53_record_ttl + 1)
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
+            .build()
+            .unwrap()
+        ;
+
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        // Re-test with no TTL at all
+        let rrs = ResourceRecordSet::builder()
+            .name(test_config.host_name.clone())
+            .r#type(RrType::A)
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
+            .build()
+            .unwrap()
+        ;
+
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+    }
+
+    #[test]
+    fn test_rrset_mismatch_for_special() {
+        let test_config = Config::build_test_config(
+            "example.com",
+            Duration::from_secs(1),
+            Duration::from_secs(100),
+            false,
+            60i64
+        );
+
+        let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
+        let test_ips_set =
+            test_ip_strs
+            .iter()
+            .map(|s| Ipv4Addr::from_str(*s)
+            .unwrap())
+            .collect::<HashSet::<_>>()
+        ;
+
+        let rrs_base = ResourceRecordSet::builder()
+            .name(test_config.host_name.clone())
+            .r#type(RrType::A)
+            .ttl(test_config.route53_record_ttl)
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
+        ;
+
+        // First the baseline test to ensure everything *else* is correct.
+        let rrs = rrs_base.clone().build().unwrap();
+        assert!(resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        // Now test for a variety of unexpected options.
+
+        let rrs = rrs_base.clone().alias_target(AliasTarget::builder().dns_name("target").hosted_zone_id("Z-12345").build().unwrap()).build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+        
+        let rrs = rrs_base.clone().cidr_routing_config(CidrRoutingConfig::builder().collection_id("collection").location_name("location").build().unwrap()).build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        let rrs = rrs_base.clone().failover(ResourceRecordSetFailover::Primary).build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+        
+        let rrs = rrs_base.clone().geo_location(GeoLocation::builder().country_code("CA").build()).build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        let rrs = rrs_base.clone().multi_value_answer(true).build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        let rrs = rrs_base.clone().region(aws_sdk_route53::types::ResourceRecordSetRegion::CaCentral1).build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        let rrs = rrs_base.clone().set_identifier("q").build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        let rrs = rrs_base.clone().traffic_policy_instance_id("i-12345").build().unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+    }
+
+    #[test]
+    fn test_rrset_mismatch_for_mismatched_addrs() {
+        let test_config = Config::build_test_config(
+            "example.com",
+            Duration::from_secs(1),
+            Duration::from_secs(100),
+            false,
+            60i64
+        );
+
+        let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
+        let test_ips_set =
+            test_ip_strs
+            .iter()
+            .map(|s| Ipv4Addr::from_str(*s)
+            .unwrap())
+            .collect::<HashSet::<_>>()
+        ;
+
+        let rrs_base = ResourceRecordSet::builder()
+            .name(test_config.host_name.clone())
+            .r#type(RrType::A)
+            .ttl(test_config.route53_record_ttl)
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
+        ;
+
+        // Baseline test
+        let rrs = rrs_base.clone()
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
+            .build()
+            .unwrap();
+        assert!(resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        // Test with one address missing
+        let rrs = rrs_base.clone()
+            .build()
+            .unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        // Test with an extra, unexpected address
+        let rrs = rrs_base.clone()
+            .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
+            .resource_records(ResourceRecord::builder().value("10.0.0.1").build().unwrap())
+            .build()
+            .unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        // Test with partially-overlapping addresses
+        let rrs = rrs_base.clone()
+            .resource_records(ResourceRecord::builder().value("10.0.0.1").build().unwrap())
+            .build()
+            .unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+        // Test with completely dissimilar addresses
+        let rrs = rrs_base.clone()
+            .resource_records(ResourceRecord::builder().value("10.0.0.1").build().unwrap())
+            .resource_records(ResourceRecord::builder().value("10.0.0.2").build().unwrap())
+            .build()
+            .unwrap();
+        assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
+
+    }
 }
