@@ -362,7 +362,6 @@ impl<'a> PluginEncoding<'a> {
                 936 => b"GBK",
                 949 => b"EUC-KR",
                 950 => b"Big5",
-                951 => b"Big5",
                 866 => b"IBM866",
                 874 => b"windows-874",
                 1200 => b"UTF-16LE",
