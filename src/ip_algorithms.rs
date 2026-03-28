@@ -405,11 +405,15 @@ impl<'a> PluginEncoding<'a> {
         #[cfg(unix)]
         {
             // Use the first envvar to specify a codeset that we support
+            // Acceptible ones will be formatted as "<language>_<country>.<encoding>@<modifier>".
             let vars_to_try = ["LC_ALL", "LC_CTYPE", "LANG"];
             for var_to_try in vars_to_try.iter() {
                 if let Some(os_value) = std::env::var_os(var_to_try) {
                     let os_value_bytes = os_value.as_os_str().as_encoded_bytes();
+                    
+                    // Find the index of the first period
                     if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
+                        // Find the encoding (which may be terminated by an '@' modifier)
                         let codeset_name = if let Some(length) = os_value_bytes[start_offset..].iter().position(|b| *b == b'@') {
                             &os_value_bytes[start_offset..(start_offset + length)]
                         }
@@ -550,6 +554,10 @@ async fn get_plugin_output(
         else {
             let e = PluginEncoding::find_encoding(stdout_content.as_slice(), encoding, "UTF-8");
             if let Some(r) = e.encoding.decode_without_bom_handling_and_without_replacement(e.data) {
+                // The encoding_rs crate's behavior differs slightly from that of Windows' MultiByteToWideChar()
+                // function with certain code-pages; however those differences are both rare and only affect characters
+                // or code-points that have nothing whatsoever to do with IP addresses. So, while we acknowledge this
+                // gap, we also choose to ignore it.
                 r.into_owned()
             }
             else {
