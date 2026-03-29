@@ -163,7 +163,7 @@ where
         }
     };
 
-    for pair in [
+    for (is_some, name) in [
         (rrs.alias_target.is_some(), "alias_target"),
         (rrs.cidr_routing_config.is_some(), "cidr_routing_config"),
         (rrs.failover.is_some(), "failover"),
@@ -175,11 +175,7 @@ where
             rrs.traffic_policy_instance_id.is_some(),
             "traffic_policy_instance_id",
         ),
-    ]
-    .iter()
-    {
-        let is_some = pair.0;
-        let name = pair.1;
+    ] {
         if is_some {
             debug!("{log_prefix}: field is unexpectedly populated: {name}");
             return false;
