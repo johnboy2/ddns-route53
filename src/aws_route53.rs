@@ -499,13 +499,13 @@ mod tests {
 
         let rrs = rrs_base.clone().alias_target(AliasTarget::builder().dns_name("target").hosted_zone_id("Z-12345").build().unwrap()).build().unwrap();
         assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
-        
+
         let rrs = rrs_base.clone().cidr_routing_config(CidrRoutingConfig::builder().collection_id("collection").location_name("location").build().unwrap()).build().unwrap();
         assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
 
         let rrs = rrs_base.clone().failover(ResourceRecordSetFailover::Primary).build().unwrap();
         assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
-        
+
         let rrs = rrs_base.clone().geo_location(GeoLocation::builder().country_code("CA").build()).build().unwrap();
         assert!(!resource_record_set_matches_expected(&rrs, &test_config, &test_ips_set, ""));
 

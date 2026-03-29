@@ -410,7 +410,7 @@ impl<'a> PluginEncoding<'a> {
             for var_to_try in vars_to_try.iter() {
                 if let Some(os_value) = std::env::var_os(var_to_try) {
                     let os_value_bytes = os_value.as_os_str().as_encoded_bytes();
-                    
+
                     // Find the index of the first period
                     if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
                         // Find the encoding (which may be terminated by an '@' modifier)
@@ -510,7 +510,7 @@ async fn get_plugin_output(
     let read_stdout_fut = tokio::spawn(async move {
         let mut buff = Vec::new();
         let _ = stdout.take(MAX_PLUGIN_DOCUMENT_LENGTH).read_to_end(&mut buff).await;
-        
+
         if buff.len() == (MAX_PLUGIN_DOCUMENT_LENGTH as usize) {
             return Err(anyhow!("plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"));
         }
@@ -572,7 +572,7 @@ async fn get_plugin_output(
     }
     else {
         return Err(anyhow!("plugin failed"));
-    } 
+    }
 }
 
 pub async fn get_plugin_ip<T>(

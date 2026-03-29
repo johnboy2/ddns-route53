@@ -85,7 +85,7 @@ mod tests {
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 1, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 0, "{:?}", addresses.v6);
-        
+
         assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr).unwrap()), "{:?}", addresses.v4);
     }
 
@@ -114,7 +114,7 @@ mod tests {
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 5, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 0, "{:?}", addresses.v6);
-        
+
         assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr1).unwrap()), "{:?}", addresses.v4);
         assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr2).unwrap()), "{:?}", addresses.v4);
         assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr3).unwrap()), "{:?}", addresses.v4);
@@ -139,7 +139,7 @@ mod tests {
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 0, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 1, "{:?}", addresses.v6);
-        
+
         assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr).unwrap()), "{:?}", addresses.v6);
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 0, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 5, "{:?}", addresses.v6);
-        
+
         assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr1).unwrap()), "{:?}", addresses.v6);
         assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr2).unwrap()), "{:?}", addresses.v6);
         assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr3).unwrap()), "{:?}", addresses.v6);
@@ -203,7 +203,7 @@ mod tests {
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 2, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 1, "{:?}", addresses.v6);
-        
+
         assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr4_1).unwrap()), "{:?}", addresses.v4);
         assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr4_2).unwrap()), "{:?}", addresses.v4);
         assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr6_1).unwrap()), "{:?}", addresses.v6);

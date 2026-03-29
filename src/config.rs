@@ -79,7 +79,7 @@ mod serde_encoding {
     {
         if let Some(s) = Option::<String>::deserialize(deserializer)? {
             let sb = s.trim_ascii().as_bytes();
-            
+
             // encoding_rs seems not to recognize some common UTF-16 aliases, so we
             // give it a hand here with a few of our own, custom translations.
             let sb: &[u8] = match sb {
@@ -579,7 +579,7 @@ impl Config {
                         last_ch = ch;
                         label_len += 1;
                         if 64 <= label_len { break 'outer; }
-                    } 
+                    }
                     else if last_ch == '-' {
                         break 'outer;
                     }
@@ -589,7 +589,7 @@ impl Config {
                 }
             }
         }
-        
+
         Err(anyhow!("invalid host name: \"{name}\""))
     }
 
@@ -782,7 +782,7 @@ mod tests {
         assert!(msg.starts_with("value cannot be negative: "), "{:?}", msg);
     }
 
-    
+
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeEncoding {
         #[serde(with = "serde_encoding")]
