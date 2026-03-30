@@ -340,6 +340,14 @@ impl<'a> PluginEncoding<'a> {
             return Self {data, encoding: e};
         }
 
+        // If BOM-sniffing finds something, go with whatever it found
+        if let Some(r) = Encoding::for_bom(data) {
+            let e = r.0;
+            let d = &data[(r.1)..];
+            debug!("Found byte-order mark; using encoding: {}", e.name());
+            return Self {data: d, encoding: e};
+        }
+
         #[cfg(windows)]
         {
             // If there is a NULL-byte near the start, assume UTF-16
@@ -347,14 +355,6 @@ impl<'a> PluginEncoding<'a> {
             if high_byte_idx < data.len() && data[high_byte_idx] == 0 {
                 debug!("Found NULL-byte in output; using encoding: UTF-16");
                 return Self {data, encoding: Encoding::for_label(b"utf-16".as_slice()).unwrap()};
-            }
-
-            // If BOM-sniffing finds something, go with whatever it found
-            if let Some(r) = Encoding::for_bom(data) {
-                let e = r.0;
-                let d = &data[(r.1)..];
-                debug!("Found byte-order mark; using encoding: {}", e.name());
-                return Self {data: d, encoding: e};
             }
 
             // Try the (Windows) OEM code page
