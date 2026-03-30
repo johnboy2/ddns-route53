@@ -12,7 +12,7 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{Encoding, mem::convert_latin1_to_utf8};
+use encoding_rs::{Encoding, mem::convert_latin1_to_str_partial};
 use igd_next::{search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
@@ -272,9 +272,13 @@ async fn get_web_service_document(
         }
         Ok(rr.unwrap())
     } else {
-        let mut buf = Vec::<u8>::with_capacity(body_binary.len() * 2);
-        let num_bytes = convert_latin1_to_utf8(body_binary.as_slice(), buf.as_mut_slice());
-        let rr = unsafe { String::from_raw_parts(buf.as_mut_ptr(), num_bytes, num_bytes) };
+        let required_len = body_binary.iter().map(|b| 1usize + (0x80u8 <= *b) as usize).sum();
+        let mut rr = unsafe {
+            String::from_utf8_unchecked(vec![0u8; required_len])
+        };
+        let (rlen, wlen) = convert_latin1_to_str_partial(body_binary.as_slice(), &mut rr);
+        debug_assert_eq!(rlen, body_binary.len());
+        debug_assert_eq!(wlen, required_len);
         Ok(rr)
     }
 }
