@@ -12,7 +12,7 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{Encoding, mem::convert_latin1_to_str_partial};
+use encoding_rs::{Encoding, UTF_8, mem::convert_latin1_to_str_partial};
 use igd_next::{search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
@@ -334,7 +334,7 @@ struct PluginEncoding<'a> {
 }
 
 impl<'a> PluginEncoding<'a> {
-    fn find_encoding(data: &'a [u8], caller_encoding: Option<&'static Encoding>, default_encoding_name: &str) -> Self {
+    fn find_encoding(data: &'a [u8], caller_encoding: Option<&'static Encoding>, fallback_encoding: &'static Encoding) -> Self {
         if let Some(e) = caller_encoding {
             debug!("Using configuration-specified encoding: {0}", e.name());
             return Self {data, encoding: e};
@@ -403,7 +403,7 @@ impl<'a> PluginEncoding<'a> {
                 debug!("Using system OEM code-page ({code_page:0>3}) -> encoding: {}", encoding.name());
                 return Self {data, encoding};
             } else {
-                warn!("System OEM code-page ({code_page:0>3}) is unsupported; trying {default_encoding_name} instead");
+                warn!("System OEM code-page ({code_page:0>3}) is unsupported; trying {0} instead", fallback_encoding.name());
             }
         }
         #[cfg(unix)]
@@ -446,14 +446,10 @@ impl<'a> PluginEncoding<'a> {
                     }
                 }
             }
-            debug!("No usable system locale codeset found; trying {0} instead", default_encoding_name);
+            debug!("No usable system locale codeset found; trying {0} instead", fallback_encoding.name());
         }
 
-        Self {
-            data,
-            encoding: Encoding::for_label(default_encoding_name.as_bytes())
-                .expect(format!("failed to load default encoding ({default_encoding_name})").as_str())
-        }
+        Self { data, encoding: fallback_encoding }
     }
 }
 
@@ -556,7 +552,7 @@ async fn get_plugin_output(
             String::new()
         }
         else {
-            let e = PluginEncoding::find_encoding(stdout_content.as_slice(), encoding, "UTF-8");
+            let e = PluginEncoding::find_encoding(stdout_content.as_slice(), encoding, UTF_8);
             if let Some(r) = e.encoding.decode_without_bom_handling_and_without_replacement(e.data) {
                 // The encoding_rs crate's behavior differs slightly from that of Windows' MultiByteToWideChar()
                 // function with certain code-pages; however those differences are both rare and only affect characters
