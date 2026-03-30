@@ -357,7 +357,9 @@ impl<'a> PluginEncoding<'a> {
                 return Self {data, encoding: Encoding::for_label(b"utf-16".as_slice()).unwrap()};
             }
 
-            // Try the (Windows) OEM code page
+            // Try the (Windows) OEM code page.
+            // Only a subset of allowed code-pages map onto known standard encodings,
+            // so this is really a "best effort" match.
             let code_page = unsafe { windows_sys::Win32::Globalization::GetACP() };
             let encoding_name = match code_page {
                 // These conversions were extracted from the encoding_rs documentation;
@@ -606,4 +608,112 @@ where
     }
 
     Ok(result)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use super::*;
+
+    #[test]
+    fn test_get_web_services_document() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap()
+        ;
+
+        let client = (*WEB_CLIENT)
+            .as_ref()
+            .unwrap();
+
+        let url = "http://captive.apple.com";
+
+        let tests = [
+            None,
+            Some(encoding_rs::WINDOWS_1252),
+            Some(encoding_rs::UTF_8)
+        ];
+        for encoding in tests {
+            let content = async_runtime.block_on(
+                get_web_service_document(
+                    client,
+                    &Url::parse(url).unwrap(),
+                    &Duration::from_secs(30),
+                    encoding
+                )
+            ).unwrap();
+
+            assert_eq!(
+                content,
+                "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n"
+            );
+        }
+    }
+
+    #[test]
+    fn test_plugin_find_encoding_from_caller_static() {
+        let encodings = [
+            encoding_rs::UTF_8,
+            encoding_rs::WINDOWS_1252,
+            encoding_rs::UTF_16LE,
+            encoding_rs::MACINTOSH
+        ];
+        for encoding in encodings {
+            let p = PluginEncoding::find_encoding(b"", Some(encoding), encoding_rs::BIG5);
+            assert_eq!(p.encoding, encoding);
+        }
+    }
+
+    #[test]
+    fn test_plugin_find_encoding_from_bom_sniff() {
+        let tests = [
+            (b"\xEF\xBB\xBFHello!".as_slice(), encoding_rs::UTF_8, b"Hello!".as_slice()),
+            (b"\xFE\xFF\x00H\x00e\x00l\x00l\x00o\x00!".as_slice(), encoding_rs::UTF_16BE, b"\x00H\x00e\x00l\x00l\x00o\x00!".as_slice()),
+            (b"\xFF\xFEH\x00e\x00l\x00l\x00o\x00!\x00".as_slice(), encoding_rs::UTF_16LE, b"H\x00e\x00l\x00l\x00o\x00!\x00".as_slice()),
+        ];
+
+        for (data, expected_encoding, remaining_data) in tests {
+            let p = PluginEncoding::find_encoding(data, None, encoding_rs::BIG5);
+            assert_eq!(p.encoding, expected_encoding);
+            assert_eq!(p.data, remaining_data);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_plugin_find_encoding_windows_utf16() {
+        let (data, expected_encoding) = if cfg!(target_endian = "little") {
+            (b"H\x00e\x00l\x00l\x00o\x00!\x00".as_slice(), encoding_rs::UTF_16LE)
+        }
+        else {
+            (b"\x00H\x00e\x00l\x00l\x00o\x00!".as_slice(), encoding_rs::UTF_16BE)
+        };
+
+        let p = PluginEncoding::find_encoding(data, None, encoding_rs::BIG5);
+        assert_eq!(p.encoding, expected_encoding);
+    }
+
+    #[test]
+    fn test_get_plugin_output() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap()
+        ;
+
+        let content = async_runtime.block_on(
+            get_plugin_output(
+                &StringOrStringVec::String("echo Hello!".to_string()),
+                &Duration::from_secs(10),
+                None,
+            )
+        ).unwrap();
+
+        assert_eq!(content, "Hello!\n");
+    }
+
 }
