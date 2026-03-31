@@ -12,7 +12,7 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{Encoding, UTF_8, mem::convert_latin1_to_str_partial};
+use encoding_rs::{Encoding, UTF_8, WINDOWS_1252};
 use igd_next::{search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
@@ -227,19 +227,22 @@ async fn get_web_service_document(
         .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()));
 
     let encoding = if let Some(name) = encoding_name {
-        let e = Encoding::for_label(name.as_bytes());
-        if e.is_none() {
-            Err(anyhow!("unknown encoding: \"{name}\""))?
+        match Encoding::for_label(name.as_bytes()) {
+            Some(e) => e,
+            None => { return Err(anyhow!("unknown encoding: \"{name}\""))?; }
         }
-        debug!("Found encoding={name} from Content-Type header");
-        e
     } else {
         debug!("No Content-Type header found, or did not contain a charset");
         match default_encoding {
-            Some(e) => debug!("Using configuration-provided default_encoding: {}", e.name()),
-            None => debug!("Using HTTP default encoding: iso-8859-1")
+            Some(e) => {
+                debug!("Using configuration-provided default_encoding: {}", e.name());
+                e
+            },
+            None => {
+                debug!("Using HTTP default encoding: iso-8859-1");
+                WINDOWS_1252
+            }
         }
-        default_encoding
     };
 
     let mut body_binary = Vec::<u8>::new();
@@ -261,25 +264,15 @@ async fn get_web_service_document(
         body_binary.extend_from_slice(item.as_ref());
     }
 
-    if let Some(e) = encoding {
-        let rr =
-            e.decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
-            .map(|s| s.into_owned())
-        ;
-        if rr.is_none() {
+    match encoding
+        .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
+        .map(|s| s.into_owned())
+    {
+        Some(decoded) => Ok(decoded),
+        None => {
             error!("web-service response could not be decoded; value: {:X?}", body_binary.as_slice());
-            return Err(anyhow!("failed to decode output with \"{}\"", e.name()));
+            Err(anyhow!("failed to decode output with \"{}\"", encoding.name()))
         }
-        Ok(rr.unwrap())
-    } else {
-        let required_len = body_binary.iter().map(|b| 1usize + (0x80u8 <= *b) as usize).sum();
-        let mut rr = unsafe {
-            String::from_utf8_unchecked(vec![0u8; required_len])
-        };
-        let (rlen, wlen) = convert_latin1_to_str_partial(body_binary.as_slice(), &mut rr);
-        debug_assert_eq!(rlen, body_binary.len());
-        debug_assert_eq!(wlen, required_len);
-        Ok(rr)
     }
 }
 
