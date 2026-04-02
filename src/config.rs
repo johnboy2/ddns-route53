@@ -457,6 +457,7 @@ impl Config {
             &config_file.aws_access_key_id,
             &config_file.aws_secret_access_key,
             &config_file.aws_region,
+            true
         )
         .await;
 
@@ -730,7 +731,13 @@ impl Config {
             .unwrap()
         ;
         let r53client = async_runtime.block_on(
-            crate::aws_route53::get_client(&None, &None, &None, &None)
+            crate::aws_route53::get_client(
+                &None,
+                &None,
+                &None,
+                &Some("us-east-1".to_owned()),
+                false
+            )
         );
 
         Self {

@@ -8,7 +8,6 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context};
-use aws_config::profile::ProfileFileCredentialsProvider;
 use aws_sdk_route53::config::Credentials;
 use aws_sdk_route53::types::{
     Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet, RrType,
@@ -26,29 +25,33 @@ pub async fn get_client(
     aws_access_key_id: &Option<String>,
     aws_secret_access_key: &Option<String>,
     aws_region: &Option<String>,
+    enable_standard_credential_search: bool
 ) -> Client {
-    let sdk_config = ::aws_config::load_from_env().await;
-    let mut config_builder = ::aws_sdk_route53::config::Builder::from(&sdk_config);
+    let mut loader = aws_config::from_env();
 
-    if let Some(region_name) = aws_region.as_ref() {
-        let region = Region::new(region_name.to_owned());
-        config_builder.set_region(Some(region));
+    if let Some(profile) = aws_profile {
+        loader = loader.profile_name(profile);
+    }
+    if let Some(region) = aws_region {
+        loader = loader.region(Region::new(region.to_owned()));
     }
 
+    let mut no_credentials = !enable_standard_credential_search;
     if let Some(access_key) = aws_access_key_id {
         if let Some(secret_access_key) = aws_secret_access_key {
-            let creds = Credentials::new(access_key, secret_access_key, None, None, "configfile");
-            config_builder = config_builder.credentials_provider(creds);
+            // Add the provided credentials as statics.
+            let creds = Credentials::new(access_key, secret_access_key, None, None, "static");
+            loader = loader.credentials_provider(creds);
+            no_credentials = false;
         }
     }
 
-    if let Some(profile) = aws_profile {
-        let profile = ProfileFileCredentialsProvider::builder()
-            .profile_name(profile)
-            .build();
-        config_builder = config_builder.credentials_provider(profile);
+    if no_credentials {
+        loader = loader.no_credentials();
     }
 
+    let sdk_config = loader.load().await;
+    let config_builder = aws_sdk_route53::config::Builder::from(&sdk_config);
     let config = config_builder.build();
     Client::from_conf(config)
 }
