@@ -7,7 +7,7 @@ edition = "2021"
 authors = ["john@jnelson.ca"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/johnboy2/ddns-route53"
-rust-version = "1.91"  # Required for AWS dependencies
+rust-version = "1.91.1"  # Required for AWS dependencies
 
 [dependencies]
 anyhow = "1.0"
