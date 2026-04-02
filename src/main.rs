@@ -2,6 +2,7 @@
 
 use std::process::exit;
 use std::rc::Rc;
+use std::time::Instant;
 
 use log::{debug, error, info, trace, warn};
 use tokio::task::{JoinHandle, LocalSet};
@@ -20,6 +21,8 @@ use crate::config::Config;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let start_time = Instant::now();
+
     let config = match Config::load().await {
         Ok(config) => config,
         Err(e) => {
@@ -35,23 +38,33 @@ async fn main() {
 
     let fut_ipv4 = {
         let arc_config = arc_config.clone();
-        local_set.spawn_local(async move { arc_config.get_ipv4_addresses().await })
+        local_set.spawn_local(async move { 
+            let r = arc_config.get_ipv4_addresses().await;
+            trace!("Local IPv4 address determination took {:.2} seconds", start_time.elapsed().as_secs_f32());
+            r
+        })
     };
     let fut_ipv6 = {
         let arc_config = arc_config.clone();
-        local_set.spawn_local(async move { arc_config.get_ipv6_addresses().await })
+        local_set.spawn_local(async move { 
+            let r = arc_config.get_ipv6_addresses().await;
+            trace!("Local IPv6 address determination took {:.2} seconds", start_time.elapsed().as_secs_f32());
+            r
+        })
     };
 
     let fut_r53_addresses: JoinHandle<anyhow::Result<Route53AddressRecords>> = {
         let arc_config = arc_config.clone();
         local_set.spawn_local(async move {
             let config = arc_config.as_ref();
-            get_resource_records(
+            let r = get_resource_records(
                 &config.route53_client,
                 &config.host_name_normalized,
                 &config.route53_zone_id,
             )
-            .await
+            .await;
+            trace!("Route53 address query took {:.2} seconds", start_time.elapsed().as_secs_f32());
+            r
         })
     };
 
@@ -75,6 +88,7 @@ async fn main() {
     };
     debug!("Got route53: {:?}", Addresses::from(&addresses_route53));
 
+    let update_time = Instant::now();
     match update_host_addresses_if_different(&arc_config, &addresses_current, &addresses_route53)
         .await
     {
@@ -85,6 +99,7 @@ async fn main() {
                 }
                 UpdateHostResult::UpdateSuccessful => {
                     info!("Update successful");
+                    trace!("Route53 update took {:.2} seconds", update_time.elapsed().as_secs_f32());
                 }
                 UpdateHostResult::UpdateSkipped => {
                     warn!("Update required, but skipped due to --no_update");
@@ -96,4 +111,5 @@ async fn main() {
             error!("Update failed: {e:#}")
         }
     };
+    trace!("Total time required: {:.2} seconds", start_time.elapsed().as_secs_f32());
 }
