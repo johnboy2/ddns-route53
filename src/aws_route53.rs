@@ -352,9 +352,20 @@ pub async fn update_host_addresses_if_different(
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
+    use std::sync::LazyLock;
     use std::time::Duration;
     use aws_sdk_route53::types::{AliasTarget, CidrRoutingConfig, GeoLocation, ResourceRecordSetFailover};
     use super::*;
+
+    static TEST_CONFIG: LazyLock<Config> = LazyLock::new(|| {
+        Config::build_test_config(
+            "example.com",
+            Duration::from_secs(1),
+            Duration::from_secs(100),
+            false,
+            60i64
+        )
+    });
 
     #[test]
     fn test_host_in_domain() {
@@ -389,13 +400,7 @@ mod tests {
 
     #[test]
     fn test_rrset_matches_expected() {
-        let test_config = Config::build_test_config(
-            "example.com",
-            Duration::from_secs(1),
-            Duration::from_secs(100),
-            false,
-            60i64
-        );
+        let test_config = &*TEST_CONFIG;
 
         let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
         let test_ips_set =
@@ -421,13 +426,7 @@ mod tests {
 
     #[test]
     fn test_rrset_mismatch_for_ttl() {
-        let test_config = Config::build_test_config(
-            "example.com",
-            Duration::from_secs(1),
-            Duration::from_secs(100),
-            false,
-            60i64
-        );
+        let test_config = &*TEST_CONFIG;
 
         let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
         let test_ips_set =
@@ -466,13 +465,7 @@ mod tests {
 
     #[test]
     fn test_rrset_mismatch_for_special() {
-        let test_config = Config::build_test_config(
-            "example.com",
-            Duration::from_secs(1),
-            Duration::from_secs(100),
-            false,
-            60i64
-        );
+        let test_config = &*TEST_CONFIG;
 
         let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
         let test_ips_set =
@@ -524,13 +517,7 @@ mod tests {
 
     #[test]
     fn test_rrset_mismatch_for_mismatched_addrs() {
-        let test_config = Config::build_test_config(
-            "example.com",
-            Duration::from_secs(1),
-            Duration::from_secs(100),
-            false,
-            60i64
-        );
+        let test_config = &*TEST_CONFIG;
 
         let test_ip_strs = ["192.168.0.1", "192.168.0.2"];
         let test_ips_set =
