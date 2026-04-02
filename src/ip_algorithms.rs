@@ -357,42 +357,42 @@ impl<'a> PluginEncoding<'a> {
             let encoding_name = match code_page {
                 // These conversions were extracted from the encoding_rs documentation;
                 // see https://docs.rs/encoding_rs/latest/encoding_rs/#relationship-with-windows-code-pages
-                932 => b"Shift_JIS",
-                936 => b"GBK",
-                949 => b"EUC-KR",
-                950 => b"Big5",
-                866 => b"IBM866",
-                874 => b"windows-874",
-                1200 => b"UTF-16LE",
-                1201 => b"UTF-16BE",
-                1250 => b"windows-1250",
-                1251 => b"windows-1251",
-                1252 => b"windows-1252",
-                1253 => b"windows-1253",
-                1254 => b"windows-1254",
-                1255 => b"windows-1255",
-                1256 => b"windows-1256",
-                1257 => b"windows-1257",
-                1258 => b"windows-1258",
-                10000 => b"macintosh",
-                10017 => b"x-mac-cyrillic",
-                20866 => b"KOI8-R",
-                20932 => b"EUC-JP",
-                21866 => b"KOI8-U",
-                28592 => b"ISO-8859-2",
-                28593 => b"ISO-8859-3",
-                28594 => b"ISO-8859-4",
-                28595 => b"ISO-8859-5",
-                28596 => b"ISO-8859-6",
-                28597 => b"ISO-8859-7",
-                28598 => b"ISO-8859-8",
-                28603 => b"ISO-8859-13",
-                28605 => b"ISO-8859-15",
-                38598 => b"ISO-8859-8-I",
-                50220 => b"ISO-2022-JP",
-                54936 => b"gb18030",
-                65001 => b"UTF-8",
-                _ => b""
+                932 => b"Shift_JIS".as_slice(),
+                936 => b"GBK".as_slice(),
+                949 => b"EUC-KR".as_slice(),
+                950 => b"Big5".as_slice(),
+                866 => b"IBM866".as_slice(),
+                874 => b"windows-874".as_slice(),
+                1200 => b"UTF-16LE".as_slice(),
+                1201 => b"UTF-16BE".as_slice(),
+                1250 => b"windows-1250".as_slice(),
+                1251 => b"windows-1251".as_slice(),
+                1252 => b"windows-1252".as_slice(),
+                1253 => b"windows-1253".as_slice(),
+                1254 => b"windows-1254".as_slice(),
+                1255 => b"windows-1255".as_slice(),
+                1256 => b"windows-1256".as_slice(),
+                1257 => b"windows-1257".as_slice(),
+                1258 => b"windows-1258".as_slice(),
+                10000 => b"macintosh".as_slice(),
+                10017 => b"x-mac-cyrillic".as_slice(),
+                20866 => b"KOI8-R".as_slice(),
+                20932 => b"EUC-JP".as_slice(),
+                21866 => b"KOI8-U".as_slice(),
+                28592 => b"ISO-8859-2".as_slice(),
+                28593 => b"ISO-8859-3".as_slice(),
+                28594 => b"ISO-8859-4".as_slice(),
+                28595 => b"ISO-8859-5".as_slice(),
+                28596 => b"ISO-8859-6".as_slice(),
+                28597 => b"ISO-8859-7".as_slice(),
+                28598 => b"ISO-8859-8".as_slice(),
+                28603 => b"ISO-8859-13".as_slice(),
+                28605 => b"ISO-8859-15".as_slice(),
+                38598 => b"ISO-8859-8-I".as_slice(),
+                50220 => b"ISO-2022-JP".as_slice(),
+                54936 => b"gb18030".as_slice(),
+                65001 => b"UTF-8".as_slice(),
+                _ => b"".as_slice(),
             };
             if let Some(encoding) = Encoding::for_label(encoding_name) {
                 debug!("Using system OEM code-page ({code_page:0>3}) -> encoding: {}", encoding.name());
@@ -706,7 +706,14 @@ mod tests {
             )
         ).unwrap();
 
-        assert_eq!(content, "Hello!\n");
+        let expected = if cfg!(target_os = "windows") {
+            "Hello!\r\n"
+        }
+        else {
+            "Hello!\n"
+        };
+
+        assert_eq!(content, expected);
     }
 
 }
