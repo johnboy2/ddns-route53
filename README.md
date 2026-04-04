@@ -6,12 +6,23 @@
 
 `ddns-route53` works by first attempting to identify the public IPv4 or IPv6 address it is running at, using several possible algorithms set in its configuration. Once its address(es) are determined, it compares the result with the DNS resource records in a [Route53](https://aws.amazon.com/route53/)-hosted zone and, if they differ, update the zone to match.
 
-## Building
+## Installing the easy way
 
-1. Install the rust compiler, using either your distribution's sources or https://www.rust-lang.org/tools/install
+1. Install the rust compiler, using either your distribution's sources or by following https://www.rust-lang.org/tools/install
+1. Run this command:
+   ```
+   cargo install ddns-route53
+   ```
+1. Once done, you'll find the utility at `~/.cargo/bin/ddns-route53` (where `~` refers to your home directory).
+
+## Building/installing (manually)
+
+If you want to build and install it manually, follow these steps instead:
+
+1. Install the rust compiler, using either your distribution's sources or by following https://www.rust-lang.org/tools/install
 1. Download the `ddns-route53` source from GitHub, or check it out using git:
    ```
-   git clone https://github.com/ansible/ansible.git
+   git clone https://github.com/johnboy2/ddns-route53.git
    ```
 1. Enter into the directory where you downloaded it, and run
    ```
@@ -29,16 +40,16 @@ Querying and updating a [Route53](https://aws.amazon.com/route53/) zone requires
 The following example shows one way to create an IAM user with limited permissions for exclusive use by `ddns-route53`.
 
  1. Determine the "Zone ID" for your [Route53](https://aws.amazon.com/route53/)-hosted DNS zone:
-    1. Log into the [Route53 console](https://console.aws.amazon.com/iam/home) as a user with sufficient administrative rights.
+    1. Log into the [Route53 console](https://console.aws.amazon.com/route53/home) as a user with sufficient administrative rights.
     1. In the Dashboard, click on "Hosted zones".
     1. Select the DNS zone for which you want Dynamic-DNS updates.
-    1. Expand "Hosted zone details".
+    1. Expand "Hosted zone details" (near the top of the page).
     1. Make note of the "Hosted zone ID" — you'll need it again later.
  1. Create an IAM user that can update the zone:
     1. Log into the [IAM console](https://console.aws.amazon.com/iam/home) as a user with sufficient administrative rights.
     1. In the Dashboard, find "Access Management" and click on "Policies".
     1. Click "Create policy"
-    1. Under the Policy editor, click on "JSON", and add the following content:
+    1. Under the Policy editor, click on "JSON", and replace the default content with the following:
         ```json
         {
             "Version": "2012-10-17",
