@@ -12,6 +12,7 @@ ExecStart=/usr/local/bin/ddns-route53 -c /usr/local/etc/ddns-route53.conf
 # This can be needed if using AWS SDK credentials stored in the user's home
 # directory. (systemd doesn't define the $HOME environment variable by default,
 # so omitting this can lead to credential failures with Route53.)
+User=ddns-user
 Environment=HOME=%h
 
 [Install]

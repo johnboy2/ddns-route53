@@ -152,6 +152,8 @@ This tool is a simple, "fire and forget" utility. That is, it checks your curren
 
 If you want to run it periodically, you can use a third-party scheduler to do so. For example, the Windows Task Scheduler, Mac iCal, Mac launchd, and Unix/Linux cron jobs, and Linux systemd can all be configured to run `ddns-route53` periodically.
 
+See the `example` folder in the source distribution for available scheduling examples.
+
 
 ## License
 
