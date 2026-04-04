@@ -31,6 +31,7 @@ async fn main() {
         }
     };
 
+    debug!("Using config file: {:?}", &config.config_file_path);
     trace!("Configuration: {}", serde_json::to_string(&config).unwrap());
     let arc_config = Rc::new(config);
 

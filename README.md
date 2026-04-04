@@ -123,15 +123,30 @@ Various other configuration options exist; see [`example/ddns-route53.conf`](exa
 
 ## Running
 
-If the configuration file is in your current directory and is named `ddns-route53.conf`, then you can run the tool directly with no arguments:
-```
-ddns-route53
-```
+### Configuration file path
 
-Alternatively, if your file has a different name or location, you can run it as:
+`ddns-route53` needs to know where its configuraiton file is located in order to run. You can do this via either of two ways:
+ 1. Provide the path to the file explicitly, or
+ 1. Rely on the utility locating the configuration file automatically.
+
+To provide the path explicitly, invoke the command with the `-c` argument followed by teh path. For example:
 ```
 ddns-route53 -c /path/to/config/file
 ```
+
+If an explicit path is not given, the utility will search in the following locations:
+ 1. `ddns-route53.conf` (i.e., a file in the current working directory)
+ 1. If running on a Posix system:
+    1. `~/.config/ddns-route53.conf`
+    1. `~/.ddns-route53.conf`
+    1. `/usr/local/etc/ddns-route53.conf`
+    1. `/etc/opt/ddns-route53.conf`
+    1. `/etc/ddns-route53.conf`
+ 1. If running on a Windows system:
+    1. `%USERPROFILE%\ddns-route53.conf`
+    1. `%ProgramData%\ddns-route53.conf`
+
+### Runtime behavior
 
 This tool is a simple, "fire and forget" utility. That is, it checks your current IP address _right now_ and updates Route53 if it differs. It **does not** recheck later.
 

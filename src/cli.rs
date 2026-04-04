@@ -2,14 +2,12 @@
 
 use clap::Parser;
 
-static DEFAULT_CONFIG_FILE: &str = "ddns-route53.conf";
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// Specify an alternate configuration file path
-    #[arg(short, long, default_value_t = DEFAULT_CONFIG_FILE.to_string())]
-    pub config_path: String,
+    #[arg(short, long)]
+    pub config_path: Option<String>,
 
     /// Do not update Route53, even if its current value is wrong
     #[arg(short, long)]

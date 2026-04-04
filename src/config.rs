@@ -6,6 +6,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::{stdout, BufReader, Read, Seek, SeekFrom};
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use std::vec::Vec;
 
@@ -359,7 +360,7 @@ struct FileConfig {
 }
 
 impl FileConfig {
-    pub fn load(path: &String) -> anyhow::Result<FileConfig> {
+    pub fn load(path: &Path) -> anyhow::Result<FileConfig> {
         let f = File::open(path).context("I/O error opening config file")?;
 
         let mut reader = BufReader::new(f);
@@ -369,7 +370,7 @@ impl FileConfig {
             .context("I/O error seeking within config file")?;
         if MAX_CONFIG_FILE_SIZE < file_size {
             return Err(anyhow!(
-                "file too large: {path} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE})"
+                "file too large: {path:?} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE})"
             ));
         }
         if file_size != 0 {
@@ -391,6 +392,7 @@ impl FileConfig {
 
 #[derive(Serialize)]
 pub struct Config {
+    pub config_file_path: PathBuf,
     pub host_name: String,
     pub host_name_normalized: String,
     pub update_poll_interval: Duration,
@@ -428,9 +430,73 @@ fn normalize_host_name(host_name: &str) -> anyhow::Result<String> {
     Ok(name_lower_idna)
 }
 
+fn find_config_file_path() -> anyhow::Result<PathBuf> {
+    let path = PathBuf::from("ddns-route53.conf");
+    if path.is_file() {
+        return Ok(path);
+    }
+
+    if cfg!(windows) {
+        let env_vars = [
+            "USERPROFILE",
+            "ProgramData"
+        ];
+        for env_var in env_vars {
+            if let Some(env_value) = std::env::var_os(env_var) {
+                let mut pb = PathBuf::from(env_value);
+                pb.push("ddns-route53.conf");
+                if pb.is_file() {
+                    return Ok(pb);
+                }
+            }
+        }
+    }
+
+    if cfg!(unix) {
+        if let Some(home_dir_path) = std::env::home_dir().as_ref() {
+            // ~/.config/ddns-route53.conf
+            let mut pb = PathBuf::from(home_dir_path);
+            pb.push(".config");
+            pb.push("ddns-route53.conf");
+            if pb.is_file() {
+                return Ok(pb);
+            }
+
+            // ~/.ddns-route53.conf
+            let mut pb = PathBuf::from(home_dir_path);
+            pb.push(".ddns-route53.conf");
+            if pb.is_file() {
+                return Ok(pb);
+            }
+        }
+
+        let static_paths = [
+            "/usr/local/etc",
+            "/etc/opt",
+            "/etc"
+        ];
+        for static_path in static_paths {
+            let mut pb = PathBuf::from(static_path);
+            pb.push("ddns-route53.conf");
+
+            if pb.is_file() {
+                return Ok(pb);
+            }
+        }
+    }
+
+    Err(anyhow!("Failed to locate configuration file"))
+}
+
 impl Config {
     async fn _apply_config_file(cli_args: &Args) -> anyhow::Result<Self> {
-        let config_file = FileConfig::load(&cli_args.config_path)?;
+        let config_file_path = if let Some(config_file_path_str) = cli_args.config_path.as_ref() {
+            PathBuf::from(config_file_path_str)
+        }
+        else {
+            find_config_file_path()?
+        };
+        let config_file = FileConfig::load(config_file_path.as_path())?;
 
         let host_name_normalized = normalize_host_name(config_file.host_name.as_ref())?;
 
@@ -467,6 +533,7 @@ impl Config {
         };
 
         Ok(Self {
+            config_file_path,
             host_name: config_file.host_name,
             host_name_normalized,
             update_poll_interval: config_file.update_poll_interval,
