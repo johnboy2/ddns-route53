@@ -301,6 +301,7 @@ where
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     host_name: String,
 
