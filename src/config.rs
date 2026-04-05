@@ -17,7 +17,7 @@ use encoding_rs::Encoding;
 use idna::{domain_to_ascii_cow, AsciiDenyList};
 use log::{debug, error, warn, LevelFilter};
 use reqwest::Url;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error};
 
 use crate::cli::{parse_cli_args, Args};
 use crate::ip_algorithms::StringOrStringVec;
@@ -301,7 +301,7 @@ where
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, remote = "Self")]
 struct FileConfig {
     host_name: String,
 
@@ -387,6 +387,30 @@ impl FileConfig {
             .context("I/O error reading config file")?;
 
         let file_config = toml::from_str(content.as_str()).context("failed to load config file")?;
+        Ok(file_config)
+    }
+}
+
+impl<'de> Deserialize<'de> for FileConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Re-use existing deserialization logic
+        let file_config = FileConfig::deserialize(deserializer)?;
+
+        // Add our custom validation
+        if file_config.aws_access_key_id.is_some() {
+            if file_config.aws_secret_access_key.is_none() {
+                return Err(D::Error::custom("missing required field: aws_secret_access_key (required because aws_access_key_id is given)"));
+            }
+        }
+        else {
+            if file_config.aws_secret_access_key.is_some() {
+                return Err(D::Error::custom("missing required field: aws_access_key_id (required because aws_secret_access_key is given)"));
+            }
+        }
+
         Ok(file_config)
     }
 }
