@@ -808,6 +808,7 @@ impl Config {
         );
 
         Self {
+            config_file_path: PathBuf::new(),
             host_name: host_name.to_owned(),
             host_name_normalized: normalize_host_name(host_name).unwrap(),
             update_poll_interval,
