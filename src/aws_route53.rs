@@ -8,53 +8,15 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context};
-use aws_sdk_route53::config::Credentials;
 use aws_sdk_route53::types::{
     Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet, RrType,
 };
 use aws_sdk_route53::Client;
-use aws_types::region::Region;
 use log::debug;
 use tokio::time::{sleep, timeout};
 
 use crate::addresses::{Route53AddressRecords, Addresses};
 use crate::config::Config;
-
-pub async fn get_client(
-    aws_profile: &Option<String>,
-    aws_access_key_id: &Option<String>,
-    aws_secret_access_key: &Option<String>,
-    aws_region: &Option<String>,
-    enable_standard_credential_search: bool
-) -> Client {
-    let mut loader = aws_config::from_env();
-
-    if let Some(profile) = aws_profile {
-        loader = loader.profile_name(profile);
-    }
-    if let Some(region) = aws_region {
-        loader = loader.region(Region::new(region.to_owned()));
-    }
-
-    let mut no_credentials = !enable_standard_credential_search;
-    if let Some(access_key) = aws_access_key_id {
-        if let Some(secret_access_key) = aws_secret_access_key {
-            // Add the provided credentials as statics.
-            let creds = Credentials::new(access_key, secret_access_key, None, None, "static");
-            loader = loader.credentials_provider(creds);
-            no_credentials = false;
-        }
-    }
-
-    if no_credentials {
-        loader = loader.no_credentials();
-    }
-
-    let sdk_config = loader.load().await;
-    let config_builder = aws_sdk_route53::config::Builder::from(&sdk_config);
-    let config = config_builder.build();
-    Client::from_conf(config)
-}
 
 fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
     let domain_lowercase = domain.to_lowercase();
@@ -149,7 +111,7 @@ where
 {
     match rrs.ttl {
         Some(ttl) => {
-            if ttl != config.route53_record_ttl {
+            if ttl != config.route53_record_ttl as i64 {
                 debug!(
                     "{log_prefix}: TTL mismatch (want={}, found={ttl})",
                     config.route53_record_ttl
@@ -243,7 +205,7 @@ where
         let rrs = ResourceRecordSet::builder()
             .set_name(Some(config.host_name_normalized.to_owned()))
             .set_type(Some(rr_type))
-            .set_ttl(Some(config.route53_record_ttl))
+            .set_ttl(Some(config.route53_record_ttl as i64))
             .set_resource_records(Some(v))
             .build()
             .context("error building Route53:ResourceRecordSet object")?;
@@ -269,6 +231,7 @@ pub enum UpdateHostResult {
 }
 
 pub async fn update_host_addresses_if_different(
+    r53: &aws_sdk_route53::Client,
     config: &Config,
     desired_addresses: &Addresses,
     current_address_records: &Route53AddressRecords,
@@ -298,7 +261,7 @@ pub async fn update_host_addresses_if_different(
 
     if changes.is_empty() {
         return Ok(UpdateHostResult::NotRequired);
-    } else if !config.update_if_different {
+    } else if config.no_update {
         return Ok(UpdateHostResult::UpdateSkipped);
     }
     let start_time = Instant::now();
@@ -310,11 +273,11 @@ pub async fn update_host_addresses_if_different(
         .set_changes(Some(changes))
         .build()
         .context("error builing Route53:ChangeBatch object")?;
-    let change_fut = config
-        .route53_client
+    let change_fut = 
+        r53
         .change_resource_record_sets()
         .set_change_batch(Some(cb))
-        .set_hosted_zone_id(Some(config.route53_zone_id.to_owned()))
+        .set_hosted_zone_id(config.route53_zone_id.to_owned())
         .send();
     let timeout_fut = timeout(config.update_timeout.to_owned(), change_fut);
 
@@ -336,8 +299,8 @@ pub async fn update_host_addresses_if_different(
         sleep(min(time_remaining, config.update_poll_interval)).await;
 
         debug!("Re-checking whether change is synchronized...");
-        let output = config
-            .route53_client
+        let output =
+            r53
             .get_change()
             .set_id(Some(ci.id))
             .send()
@@ -366,7 +329,7 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(100),
             false,
-            60i64
+            60
         )
     });
 
@@ -417,7 +380,7 @@ mod tests {
         let rrs = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl)
+            .ttl(test_config.route53_record_ttl as i64)
             .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
             .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
             .build()
@@ -444,7 +407,7 @@ mod tests {
         let rrs = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl + 1)
+            .ttl(test_config.route53_record_ttl as i64 + 1)
             .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
             .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
             .build()
@@ -482,7 +445,7 @@ mod tests {
         let rrs_base = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl)
+            .ttl(test_config.route53_record_ttl as i64)
             .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
             .resource_records(ResourceRecord::builder().value(test_ip_strs[1]).build().unwrap())
         ;
@@ -534,7 +497,7 @@ mod tests {
         let rrs_base = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl)
+            .ttl(test_config.route53_record_ttl as i64)
             .resource_records(ResourceRecord::builder().value(test_ip_strs[0]).build().unwrap())
         ;
 

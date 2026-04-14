@@ -1,48 +1,42 @@
-// SPDX-License-Identifier: [MIT] OR [Apache-2.0]
-
-use core::str;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
-use std::io::{stdout, BufReader, Read, Seek, SeekFrom};
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use std::vec::Vec;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
+use aws_config::ConfigLoader;
+use aws_sdk_route53::config::Credentials;
+use aws_types::region::Region;
+use clap::{Args, ArgAction, Parser, ValueHint};
+use encoding_rs::Encoding;
 use fern::Dispatch;
 use humantime::format_rfc3339_seconds;
-use encoding_rs::Encoding;
-use idna::{domain_to_ascii_cow, AsciiDenyList};
-use log::{debug, error, warn, LevelFilter};
+use idna::{AsciiDenyList, domain_to_ascii_cow};
+use log::{LevelFilter, error};
+use serde::{Deserialize, Serialize};
 use reqwest::Url;
-use serde::{Deserialize, Deserializer, Serialize, de::Error};
 
-use crate::cli::{parse_cli_args, Args};
 use crate::ip_algorithms::StringOrStringVec;
 
-fn default_algo_timeout() -> Duration {
-    Duration::from_secs(10)
-}
-fn default_update_poll_seconds() -> Duration {
-    Duration::from_secs(30)
-}
-fn default_update_timeout_seconds() -> Duration {
-    Duration::from_secs(300)
-}
-fn default_route53_ttl() -> i64 {
-    3600
-}
-fn default_log_level() -> LevelFilter {
-    LevelFilter::Info
-}
-fn default_log_level_other() -> LevelFilter {
-    LevelFilter::Warn
-}
-const MAX_CONFIG_FILE_SIZE: u64 = 65536;
-const TTL_MIN: i64 = 0;
-const TTL_MAX: i64 = 2147483647;
+
+const DEFAULT_ALGO_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_UPDATE_POLL_SECS: f64 = 30.0;
+const DEFAULT_UPDATE_TIMEOUT_SECS: f64 = 300.0;
+const DEFAULT_ROUTE53_TLL: i32 = 3600;
+const DEFAULT_LOG_FILE_LEVEL: LevelFilter = LevelFilter::Info;
+const DEFAULT_LOG_FILE_LEVEL_OTHER: LevelFilter = LevelFilter::Off;
+const MAX_CONFIG_FILE_SIZE_BYTES: u64 = 65536;
+const MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
+const MAX_UPDATE_TIMEOUT_SECONDS: f64 = 86400.0;
+const MIN_UPDATE_POLL_SECONDS: f64 = 0.0;
+const MIN_UPDATE_TIMEOUT_SECONDS: f64 = 0.0;
+
+
+fn serde_default_algo_timeout() -> Duration { Duration::from_secs(DEFAULT_ALGO_TIMEOUT_SECS) }
+
 
 mod serde_duration_f64 {
     use serde::de::Error;
@@ -112,6 +106,37 @@ mod serde_encoding {
     }
 }
 
+mod serde_levelfilter {
+    use std::str::FromStr;
+
+    use log::LevelFilter;
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<LevelFilter>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+
+        match LevelFilter::from_str(s.as_str()) {
+            Ok(level) => {
+                // Why disallow "trace" to log files? Because it leaks AWS secrets within the Client object.
+                // I briefly entertained the idea of a CLI flag to allow override this restriction, but decided against that
+                // on the grounds that enabling truly dumb behavior (i.e., knowingly leaking secrets into log files) is
+                // almost always unwise. (At least any console leaking that might occur is under control of the user who has
+                // those secrets already.)
+                if level == LevelFilter::Trace {
+                    Err(D::Error::custom("This level is not allowed for the log file. Use the \"-vvv\" CLI option to get trace-level logging to the console instead."))
+                } else {
+                    Ok(Some(level))
+                }
+            }
+            Err(_) => Err(D::Error::custom("Unknown log level")),
+        }
+    }
+}
+
 mod serde_url {
     use reqwest::Url;
     use serde::de::Error;
@@ -135,47 +160,12 @@ mod serde_url {
     }
 }
 
-mod serde_levelfilter {
-    use std::str::FromStr;
-
-    use log::LevelFilter;
-    use serde::de::Error;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<LevelFilter, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-
-        match LevelFilter::from_str(s.as_str()) {
-            Ok(level) => {
-                // Why disallow "trace" to log files? Because it leaks AWS secrets within the Client object.
-                // I briefly entertained the idea of a CLI flag to allow override this restriction, but decided against that
-                // on the grounds that enabling truly dumb behavior (i.e., knowingly leaking secrets into log files) is
-                // almost always unwise. (At least any console leaking that might occur is under control of the user who has
-                // those secrets already.)
-                if level == LevelFilter::Trace {
-                    Err(D::Error::custom("This level is not allowed for the log file. Use the \"-vvv\" CLI option to get trace-level logging to the console instead."))
-                } else {
-                    Ok(level)
-                }
-            }
-            Err(_) => Err(D::Error::custom("Unknown log level")),
-        }
-    }
-
-    pub fn serialize<S>(level: &LevelFilter, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer
-    {
-        serializer.serialize_str(level.as_str())
-    }
-}
-
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
-enum AlgorithmSpecification {
+pub enum AlgorithmSpecification {
+    #[serde(rename = "none")]
+    None,
+
     #[serde(rename = "default_public_ip")]
     DefaultPublicIp,
 
@@ -184,7 +174,7 @@ enum AlgorithmSpecification {
         #[serde(
             rename = "timeout_seconds",
             with = "serde_duration_f64",
-            default = "default_algo_timeout"
+            default = "serde_default_algo_timeout"
         )]
         timeout: Duration,
     },
@@ -197,7 +187,7 @@ enum AlgorithmSpecification {
         #[serde(
             rename = "timeout_seconds",
             with = "serde_duration_f64",
-            default = "default_algo_timeout"
+            default = "serde_default_algo_timeout"
         )]
         timeout: Duration,
 
@@ -212,7 +202,7 @@ enum AlgorithmSpecification {
         #[serde(
             rename = "timeout_seconds",
             with = "serde_duration_f64",
-            default = "default_algo_timeout"
+            default = "serde_default_algo_timeout"
         )]
         timeout: Duration,
 
@@ -223,9 +213,9 @@ enum AlgorithmSpecification {
 
 impl Debug for AlgorithmSpecification {
     // For debugging purposes, we want a concise description of each algorithm with all the details.
-    // Serializing to (compact) JSON gives us that.
+    // Serializing to (compact) TOML gives us that.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        serde_json::to_string(&self)
+        toml::to_string(&self)
             .map_err(|e| {
                 error!(
                     "Failed to serialize AlgorithmSpecification: {}",
@@ -241,571 +231,275 @@ impl Display for AlgorithmSpecification {
     // For display purposes, we want a *simple* description of each algorithm, without unnecessary details.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
+            Self::None => f.write_str("none"),
             Self::DefaultPublicIp => f.write_str("default_public_ip"),
-            Self::InternetGatewayProtocol { timeout: _ } => write!(f, "internet_gateway_protocol"),
-            Self::WebService { url, timeout: _, default_encoding: _ } => write!(f, "web_service:\"{}\"", url.as_str()),
+            Self::InternetGatewayProtocol {
+                timeout: _
+            } => write!(f, "internet_gateway_protocol"),
+            Self::WebService {
+                url,
+                timeout: _,
+                default_encoding: _
+            } => write!(f, "web_service:\"{}\"", url.as_str()),
             Self::Plugin {
                 command,
                 timeout: _,
                 encoding: _
-            } => {
-                const MAX_STR_LEN: usize = 32;
-                match command {
-                    StringOrStringVec::String(s) => {
-                        if s.len() <= MAX_STR_LEN {
-                            write!(f, "plugin:\"{s}\"")
-                        } else {
-                            let substr: String = s.chars().take(MAX_STR_LEN - 1).collect();
-                            write!(f, "plugin:\"{substr}…\"")
-                        }
-                    }
-                    StringOrStringVec::Vec(v) => {
-                        if v.is_empty() {
-                            write!(f, "plugin:")
-                        } else if v[0].len() <= MAX_STR_LEN {
-                            write!(f, "plugin:\"{} …\"", v[0])
-                        } else {
-                            let substr: String = v[0].chars().take(MAX_STR_LEN - 1).collect();
-                            write!(f, "plugin:\"{substr}…\"")
-                        }
-                    }
-                }
-            }
+            } => write!(f, "plugin:\"{command}\"")
         }
     }
 }
 
-// Overrides the default in that a `Some("")` becomes `None`.
-fn deserialize_option_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = Option::<String>::deserialize(deserializer)?;
-    Ok(s.filter(|s| !s.is_empty()))
+
+#[derive(Args, Deserialize)]
+struct CommonOptions {
+    /// The fully-qualified domain name of the host to update. (This must be specified in either a configuration file or on the command-line.)
+    #[arg(short='h', long)]
+    pub host_name: Option<String>,
+
+    /// (Optional) The Route53 zone ID within AWS to keep up to date. If not specified, the utility will attempt to resolve this dynamically.
+    #[arg(short='z', long)]
+    pub route53_zone_id: Option<String>,
+
+    /// The TTL use when updating the applicable Route53 resource record(s). Defaults to 3600 unless overridden by a configuration file.
+    #[arg(short='t', long)]
+    pub route53_record_ttl: Option<i32>,
+
+    /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 300 unless overridden by a configuration file.
+    #[arg(short='w', long)]
+    pub update_timeout_seconds: Option<f64>,
+
+    /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 30 unless overridden by a configuration file.
+    #[arg(short='s', long)]
+    pub update_poll_seconds: Option<f64>,
+
+    /// Use a specific profile from your (AWS) credential file.
+    #[arg(long)]
+    pub aws_profile: Option<String>,
+
+    /// Use an AWS region for Route53 API calls. If omitted, this usually defaults to "us-east-1" (depends on your local Route53 SDK configuration).
+    #[arg(long)]
+    pub aws_region: Option<String>,
+
+    /// (Optional) File-path at which to log events or actions related to this utility's execution. This may be used either instead of, or in addition to, console logging.
+    #[arg(short='f', long, value_hint = ValueHint::FilePath)]
+    pub log_file: Option<std::path::PathBuf>,
+
+    /// (Optional) Set the logging-level of this tool to the `log_file`. Must be one of "off", "error", "warn", "info", or "debug". (This DOES NOT affect console-output verbosity.) Defaults to "info".
+    #[arg(short='l', long, value_parser = clap::value_parser!(LevelFilter))]
+    #[serde(with = "serde_levelfilter")]
+    pub log_level: Option<LevelFilter>,
+
+    /// (Optional) Set the logging-level of other libraries this tool uses internally to the `log_file`. Must be one of "off", "error", "warn", "info", or "debug". (This DOES NOT affect console-output verbosity.) Defaults to "off".
+    #[arg(short='o', long, value_parser = clap::value_parser!(LevelFilter))]
+    #[serde(with = "serde_levelfilter")]
+    pub log_level_other: Option<LevelFilter>,
+
+    #[arg(long="ipv4", action=ArgAction::Append, value_parser = |arg: &str| toml::from_str::<AlgorithmSpecification>(arg))]
+    pub ipv4_algorithms: Option<Vec<AlgorithmSpecification>>,
+
+    #[arg(long="ipv6", action=ArgAction::Append, value_parser = |arg: &str| toml::from_str::<AlgorithmSpecification>(arg))]
+    pub ipv6_algorithms: Option<Vec<AlgorithmSpecification>>,
 }
 
-// Ensures TTLs are in a valid range
-fn deserialize_dns_ttl<'de, D>(deserializer: D) -> Result<i64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let i = i64::deserialize(deserializer)?;
-    if TTL_MIN <= i && i <= TTL_MAX {
-        Ok(i)
-    } else {
-        use serde::de::Error;
-        Err(D::Error::custom(format!(
-            "DNS TTL value must be in range {TTL_MIN}-{TTL_MAX}: {i}"
-        )))
-    }
+
+#[derive(Parser)]
+struct CliOptions {
+    #[command(flatten)]
+    pub common: CommonOptions,
+
+    /// Specify a configuration file path. If omitted, it will search a default set of paths for the file to use. Pass the special value '-' to disable use of a configuration file.
+    #[arg(short='c', long, value_hint = ValueHint::FilePath)]
+    pub config_path: Option<std::path::PathBuf>,
+
+    /// Do not update Route53, even if its current value is wrong.
+    #[arg(short='n', long)]
+    pub no_update: bool,
+
+    /// Increase console logging verbosity (may be used more than once).
+    #[arg(short='v', long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Increase console logging for dependent libraries (may be used more than once)
+    #[arg(long, action = clap::ArgAction::Count)]
+    pub verbosity_other: u8,
 }
+
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-struct FileConfig {
-    host_name: String,
+struct FileOptions {
+    #[serde(flatten)]
+    pub common: CommonOptions,
 
-    #[serde(
-        rename = "update_poll_seconds",
-        with = "serde_duration_f64",
-        default = "default_update_poll_seconds"
-    )]
-    update_poll_interval: Duration,
+    pub aws_access_key_id: Option<String>,
 
-    #[serde(
-        rename = "update_timeout_seconds",
-        with = "serde_duration_f64",
-        default = "default_update_timeout_seconds"
-    )]
-    update_timeout: Duration,
-
-    ipv4_algorithms: Vec<AlgorithmSpecification>,
-
-    ipv6_algorithms: Vec<AlgorithmSpecification>,
-
-    #[serde(deserialize_with = "deserialize_option_string", default)]
-    aws_profile: Option<String>,
-
-    #[serde(deserialize_with = "deserialize_option_string", default)]
-    aws_access_key_id: Option<String>,
-
-    #[serde(deserialize_with = "deserialize_option_string", default)]
-    aws_secret_access_key: Option<String>,
-
-    #[serde(deserialize_with = "deserialize_option_string", default)]
-    aws_region: Option<String>,
-
-    #[serde(deserialize_with = "deserialize_option_string", default)]
-    aws_route53_zone_id: Option<String>,
-
-    #[serde(
-        deserialize_with = "deserialize_dns_ttl",
-        default = "default_route53_ttl"
-    )]
-    aws_route53_record_ttl: i64,
-
-    #[serde(deserialize_with = "deserialize_option_string", default)]
-    log_file: Option<String>,
-
-    #[serde(
-        with = "serde_levelfilter",
-        default = "default_log_level"
-    )]
-    log_level: LevelFilter,
-
-    #[serde(
-        with = "serde_levelfilter",
-        default = "default_log_level_other"
-    )]
-    log_level_other: LevelFilter,
+    pub aws_secret_access_key: Option<String>,
 }
 
-impl FileConfig {
-    pub fn load(path: &Path) -> anyhow::Result<FileConfig> {
-        let f = File::open(path).context("I/O error opening config file")?;
 
-        let mut reader = BufReader::new(f);
-
-        let file_size = reader
-            .seek(SeekFrom::End(0))
-            .context("I/O error seeking within config file")?;
-        if MAX_CONFIG_FILE_SIZE < file_size {
-            return Err(anyhow!(
-                "file too large: {path:?} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE})"
-            ));
-        }
-        if file_size != 0 {
-            reader
-                .seek(SeekFrom::Start(0))
-                .expect("seek to start should always work");
-        }
-
-        let mut content = String::new();
-        content.reserve(file_size as usize);
-        reader
-            .read_to_string(&mut content)
-            .context("I/O error reading config file")?;
-
-        let file_config = toml::from_str(content.as_str()).context("failed to load config file")?;
-        Ok(file_config)
-    }
-}
-
-impl<'de> Deserialize<'de> for FileConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // Re-use existing deserialization logic
-        let file_config = FileConfig::deserialize(deserializer)?;
-
-        // Add our custom validation
-        if file_config.aws_access_key_id.is_some() {
-            if file_config.aws_secret_access_key.is_none() {
-                return Err(D::Error::custom("missing required field: aws_secret_access_key (required because aws_access_key_id is given)"));
-            }
-        }
-        else {
-            if file_config.aws_secret_access_key.is_some() {
-                return Err(D::Error::custom("missing required field: aws_access_key_id (required because aws_secret_access_key is given)"));
-            }
-        }
-
-        Ok(file_config)
-    }
-}
-
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 pub struct Config {
-    pub config_file_path: PathBuf,
+    pub config_file_path: Option<PathBuf>,
     pub host_name: String,
-    pub host_name_normalized: String,
-    pub update_poll_interval: Duration,
+    pub route53_zone_id: Option<String>,
+    pub route53_record_ttl: i32,
     pub update_timeout: Duration,
-    pub update_if_different: bool,
+    pub update_poll_interval: Duration,
+    pub no_update: bool,
+    pub ipv4_algorithms: Vec<AlgorithmSpecification>,
+    pub ipv6_algorithms: Vec<AlgorithmSpecification>,
 
-    ipv4_algorithms: Vec<AlgorithmSpecification>,
-    ipv6_algorithms: Vec<AlgorithmSpecification>,
-
-    #[serde(skip_serializing)]
-    pub route53_client: ::aws_sdk_route53::Client,
-
-    pub route53_zone_id: String,
-    pub route53_record_ttl: i64,
-    log_file: Option<String>,
-
-    #[serde(with = "serde_levelfilter")]
-    log_level: LevelFilter,
-    #[serde(with = "serde_levelfilter")]
-    log_level_other: LevelFilter,
-}
-
-
-fn normalize_host_name(host_name: &str) -> anyhow::Result<String> {
-    let mut name_lower_idna =
-        domain_to_ascii_cow(host_name.as_bytes(), AsciiDenyList::URL)
-            .map(|s| s.into_owned())
-            .context("invalid hostname")?;
-
-    Config::validate_idna_host_name(name_lower_idna.as_str())
-        .context("invalid hostname")?;
-    if !name_lower_idna.ends_with(".") {
-        name_lower_idna += ".";
-    }
-    Ok(name_lower_idna)
-}
-
-fn find_config_file_path() -> anyhow::Result<PathBuf> {
-    let path = PathBuf::from("ddns-route53.conf");
-    if path.is_file() {
-        return Ok(path);
-    }
-
-    if cfg!(windows) {
-        let env_vars = [
-            "USERPROFILE",
-            "ProgramData"
-        ];
-        for env_var in env_vars {
-            if let Some(env_value) = std::env::var_os(env_var) {
-                let mut pb = PathBuf::from(env_value);
-                pb.push("ddns-route53.conf");
-                if pb.is_file() {
-                    return Ok(pb);
-                }
-            }
-        }
-    }
-
-    if cfg!(unix) {
-        if let Some(home_dir_path) = std::env::home_dir().as_ref() {
-            // ~/.config/ddns-route53.conf
-            let mut pb = PathBuf::from(home_dir_path);
-            pb.push(".config");
-            pb.push("ddns-route53.conf");
-            if pb.is_file() {
-                return Ok(pb);
-            }
-
-            // ~/.ddns-route53.conf
-            let mut pb = PathBuf::from(home_dir_path);
-            pb.push(".ddns-route53.conf");
-            if pb.is_file() {
-                return Ok(pb);
-            }
-        }
-
-        let static_paths = [
-            "/usr/local/etc",
-            "/etc/opt",
-            "/etc"
-        ];
-        for static_path in static_paths {
-            let mut pb = PathBuf::from(static_path);
-            pb.push("ddns-route53.conf");
-
-            if pb.is_file() {
-                return Ok(pb);
-            }
-        }
-    }
-
-    Err(anyhow!("Failed to locate configuration file"))
+    #[serde(skip)]
+    pub host_name_normalized: String
 }
 
 impl Config {
-    async fn _apply_config_file(cli_args: &Args) -> anyhow::Result<Self> {
-        let config_file_path = if let Some(config_file_path_str) = cli_args.config_path.as_ref() {
-            PathBuf::from(config_file_path_str)
-        }
-        else {
-            find_config_file_path()?
-        };
-        let config_file = FileConfig::load(config_file_path.as_path())?;
+    pub fn load() -> anyhow::Result<(Self, ConfigLoader)> {
+        let cli_args = CliOptions::parse();
+        let maybe_file_config: Option<FileOptions>;
+        let mut result = Self { ..Default::default() };
 
-        let host_name_normalized = normalize_host_name(config_file.host_name.as_ref())?;
+        let console_log_dispatcher = create_console_log_dispatcher(&cli_args);
 
-        for ipv6_algo in &config_file.ipv6_algorithms {
-            match ipv6_algo {
-                AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
-                    return Err(anyhow!("internet_gateway_protocol can only be used with ipv4_algorithms (not ipv6)"));
-                }
-                _ => {}
-            }
-        }
-
-        if config_file.aws_access_key_id.is_some() != config_file.aws_secret_access_key.is_some() {
-            return Err(anyhow!("config 'aws_access_key_id' and 'aws_secret_access_key' must both be either present or absent"));
-        }
-        if config_file.aws_access_key_id.is_some() && config_file.aws_profile.is_some() {
-            return Err(anyhow!(
-                "config cannot use 'aws_profile' with 'aws_access_key_id'"
-            ));
-        }
-
-        let client = crate::aws_route53::get_client(
-            &config_file.aws_profile,
-            &config_file.aws_access_key_id,
-            &config_file.aws_secret_access_key,
-            &config_file.aws_region,
-            true
-        )
-        .await;
-
-        let zone_id = match config_file.aws_route53_zone_id {
-            Some(zone) => zone,
-            None => crate::aws_route53::get_zone_id(&client, host_name_normalized.as_ref()).await?,
-        };
-
-        Ok(Self {
-            config_file_path,
-            host_name: config_file.host_name,
-            host_name_normalized,
-            update_poll_interval: config_file.update_poll_interval,
-            update_timeout: config_file.update_timeout,
-            update_if_different: !cli_args.no_update,
-            ipv4_algorithms: config_file.ipv4_algorithms,
-            ipv6_algorithms: config_file.ipv6_algorithms,
-            route53_client: client,
-            route53_zone_id: zone_id,
-            route53_record_ttl: config_file.aws_route53_record_ttl,
-            log_file: config_file.log_file,
-            log_level: config_file.log_level,
-            log_level_other: config_file.log_level_other,
-        })
-    }
-
-    pub async fn load() -> anyhow::Result<Self> {
-        let cli_args = parse_cli_args();
-
-        let log_stdout = Dispatch::new()
-            .format(|out, message, record| {
-                out.finish(format_args!(
-                    "{} [{}] {}: {}",
-                    format_rfc3339_seconds(SystemTime::now()),
-                    record.target(),
-                    record.level(),
-                    message
-                ))
-            })
-            .level_for(
-                env!("CARGO_CRATE_NAME"),
-                match cli_args.verbose {
-                    0 => LevelFilter::Warn,
-                    1 => LevelFilter::Info,
-                    2 => LevelFilter::Debug,
-                    _ => LevelFilter::Trace,
-                },
-            )
-            .level(match cli_args.log_other {
-                0 => LevelFilter::Warn,
-                1 => LevelFilter::Info,
-                2 => LevelFilter::Debug,
-                _ => LevelFilter::Trace,
-            })
-            .chain(stdout());
-
-        let config = match Self::_apply_config_file(&cli_args).await {
-            Ok(config) => {
-                let log_file = config.get_file_logger();
-                match log_file {
-                    Ok(log_file) => {
-                        if let Some(log_file) = log_file {
-                            Dispatch::new()
-                                .chain(log_stdout)
-                                .chain(log_file)
-                                .apply()
-                                .expect("multiple loggers not allowed");
+        match find_configuration_file(
+            cli_args.config_path.map(|pb| Cow::Owned(pb))
+        ) {
+            Ok(maybe_file_path) => {
+                if let Some(file_path) = maybe_file_path {
+                    match load_config_file(&file_path) {
+                        Ok(config) => {
+                            maybe_file_config = Some(config);
+                            result.config_file_path = Some(file_path.to_path_buf());
+                        },
+                        Err(e) => {
+                            // Ensure at least the console-log is setup before returning the error
+                            console_log_dispatcher.apply().expect("multiple loggers not allowed");
+                            return Err(e);
                         }
                     }
-                    Err(e) => {
-                        // Fall back on the stdout logger
-                        log_stdout.apply().expect("multiple loggers not allowed");
-
-                        return Err(anyhow!(e));
-                    }
-                };
-                config
-            }
+                }
+                else {
+                    maybe_file_config = None;
+                }
+            },
             Err(e) => {
-                // Fall back on the stdout logger
-                log_stdout.apply().expect("multiple loggers not allowed");
-
+                // Ensure at least the console-log is setup before returning the error
+                console_log_dispatcher.apply().expect("multiple loggers not allowed");
                 return Err(e);
             }
         };
 
-        Ok(config)
-    }
+        let cli = &cli_args.common;
+        let file = maybe_file_config.as_ref().map(|args| &args.common);
 
-    fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
-        'outer: loop {
-            if name.is_empty() || 255 < name.len() { break; }
+        // Finish setting up logging (console and/or file)
 
-            let mut itr = name.chars();
-            let mut label_len = 0;
-            let mut last_ch;
+        macro_rules! take_first_defined {
+            ($name:ident) => { cli.$name.as_ref().or(file.map(|o| o.$name.as_ref()).flatten()) }
+        }
 
-            loop {
-                if let Some(ch) = itr.next() {
-                    match ch {
-                        'a'..='z' | 'A'..='Z' | '0'..='9' => {},
-                        _ => { break 'outer; }
-                    }
-                    last_ch = ch;
-                    label_len += 1;
+        if let Some(log_file_path) = take_first_defined!(log_file).map(|pb| pb.as_path())
+        {
+            let file_log_dispatcher = match create_file_log_dispatcher(
+                log_file_path, 
+                take_first_defined!(log_level).unwrap_or(&DEFAULT_LOG_FILE_LEVEL),
+                take_first_defined!(log_level_other).unwrap_or(&DEFAULT_LOG_FILE_LEVEL_OTHER)
+            ) {
+                Ok(dispatcher) => dispatcher,
+                Err(e) => {
+                    // Ensure at least the console-log is setup before returning the error
+                    console_log_dispatcher.apply().expect("multiple loggers not allowed");
+                    return Err(e);
                 }
-                else {
-                    // Since we know the host-name wasn't completely empty, having
-                    // nothing after a dot (separator) means it was a trailing dot.
-                    // That is OK.
-                    return Ok(());
-                }
+            };
 
-                loop {
-                    if let Some(ch) = itr.next() {
-                        match ch {
-                            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {},
-                            '.' if last_ch != '-' => { break; },
-                            _ => { break 'outer; }
-                        }
-                        last_ch = ch;
-                        label_len += 1;
-                        if 64 <= label_len { break 'outer; }
-                    }
-                    else if last_ch == '-' {
-                        break 'outer;
-                    }
-                    else {
-                        return Ok(());
-                    }
-                }
+            // Join both console and file dispatchers into a single logger.
+            Dispatch::new()
+                .chain(console_log_dispatcher)
+                .chain(file_log_dispatcher)
+                .apply()
+                .expect("multiple loggers not allowed");
+        }
+        else {
+            // No log-file given. Setup the console logger only.
+            console_log_dispatcher.apply().expect("multiple loggers not allowed");
+        }
+
+        result.host_name =
+            take_first_defined!(host_name)
+            .ok_or(anyhow!("Missing required option: 'host_name'"))?
+            .clone()
+        ;
+        result.host_name_normalized = normalize_host_name(result.host_name.as_str())?.to_string();
+
+        result.route53_record_ttl = *take_first_defined!(route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
+        if result.route53_record_ttl < 0 {
+            return Err(anyhow!("route53_record_ttl cannot be negative: {0}", result.route53_record_ttl));
+        }
+
+        result.update_timeout = Duration::from_secs_f64(
+            validate_value_in_range(
+                *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS),
+                MIN_UPDATE_TIMEOUT_SECONDS,
+                MAX_UPDATE_TIMEOUT_SECONDS,
+                "update_timeout"
+            )?
+        );
+
+        result.update_poll_interval = Duration::from_secs_f64(
+            validate_value_in_range(
+                *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
+                MIN_UPDATE_POLL_SECONDS,
+                MAX_UPDATE_POLL_SECONDS,
+                "update_poll"
+            )?
+        );
+
+        result.no_update = cli_args.no_update;
+
+        if let Some(zone_id) = take_first_defined!(route53_zone_id) {
+            result.route53_zone_id = Some(zone_id.clone());
+        }
+
+        if let Some(ip_algos) = take_first_defined!(ipv4_algorithms) {
+            if validate_ip_algorithm_combination(ip_algos, false)? {
+                result.ipv4_algorithms = ip_algos.clone();
             }
         }
 
-        Err(anyhow!("invalid host name: \"{name}\""))
-    }
-
-    pub fn get_file_logger(&self) -> Result<Option<fern::Dispatch>, String> {
-        if let Some(log_file) = &self.log_file {
-            let log = fern::Dispatch::new()
-                .format(|out, message, record| {
-                    out.finish(format_args!(
-                        "{} [{}] {}: {}",
-                        humantime::format_rfc3339_seconds(SystemTime::now()),
-                        record.target(),
-                        record.level(),
-                        message
-                    ))
-                })
-                .level_for(env!("CARGO_CRATE_NAME"), self.log_level)
-                .level(self.log_level_other)
-                .chain(match fern::log_file(log_file) {
-                    Ok(log) => log,
-                    Err(e) => {
-                        return Err(format!("{e}"));
-                    }
-                });
-            Ok(Some(log))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub async fn get_ipv4_addresses(&self) -> HashSet<Ipv4Addr> {
-        let algos = &self.ipv4_algorithms;
-        let ip_version = '4';
-
-        for (idx, algo) in algos.iter().enumerate() {
-            debug!("ipv{ip_version}_algorithms[{idx}]: Trying algorithm: {algo:?}");
-
-            let algo_result = match algo {
-                AlgorithmSpecification::DefaultPublicIp => {
-                    crate::ip_algorithms::get_default_public_ipv4().await
-                }
-                AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
-                    crate::ip_algorithms::get_igd_ipv4(timeout).await
-                }
-                AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
-                    crate::ip_algorithms::get_web_service_ip::<Ipv4Addr>(url, timeout, *default_encoding).await
-                }
-                AlgorithmSpecification::Plugin { command, timeout, encoding } => {
-                    crate::ip_algorithms::get_plugin_ip::<Ipv4Addr>(command, timeout, *encoding).await
-                }
-            };
-
-            match algo_result {
-                Ok(ips) => {
-                    debug!(
-                        "ipv{ip_version}_algorithms[{idx}]: got addresses: {:?}",
-                        &ips
-                    );
-                    if ips.is_empty() {
-                        debug!("ipv{ip_version}_algorithms[{idx}]: skipping empty result");
-                    } else {
-                        return ips.iter().copied().collect();
-                    }
-                }
-                Err(msg) => {
-                    warn!("ipv{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
-                }
-            };
+        if let Some(ip_algos) = take_first_defined!(ipv6_algorithms) {
+            if validate_ip_algorithm_combination(ip_algos, true)? {
+                result.ipv6_algorithms = ip_algos.clone();
+            }
         }
 
-        if algos.len() != 0 {
-            warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        let maybe_aws_region = take_first_defined!(aws_region);
+
+        let mut aws_config_loader = aws_config::from_env();
+        if let Some(aws_region) = maybe_aws_region {
+            aws_config_loader = aws_config_loader.region(Region::new(aws_region.clone()));
         }
 
-        HashSet::<Ipv4Addr>::new()
-    }
-
-    pub async fn get_ipv6_addresses(&self) -> HashSet<Ipv6Addr> {
-        let algos = &self.ipv6_algorithms;
-        let ip_version = '6';
-
-        for (idx, algo) in algos.iter().enumerate() {
-            debug!("ipv{ip_version}_algorithms[{idx}]: Trying algorithm: {algo:?}");
-
-            let algo_result = match algo {
-                AlgorithmSpecification::DefaultPublicIp => {
-                    crate::ip_algorithms::get_default_public_ipv6().await
-                }
-                AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
-                    Err::<Vec<Ipv6Addr>, anyhow::Error>(anyhow!(
-                        "internet_gateway_device algorithm is not implemented for IPv6"
-                    ))
-                }
-                AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
-                    crate::ip_algorithms::get_web_service_ip::<Ipv6Addr>(url, timeout, *default_encoding).await
-                }
-                AlgorithmSpecification::Plugin { command, timeout, encoding } => {
-                    crate::ip_algorithms::get_plugin_ip::<Ipv6Addr>(command, timeout, *encoding).await
-                }
-            };
-
-            match algo_result {
-                Ok(ips) => {
-                    debug!(
-                        "ipv{ip_version}_algorithms[{idx}]: got addresses: {:?}",
-                        &ips
-                    );
-                    if ips.is_empty() {
-                        debug!("ipv{ip_version}_algorithms[{idx}]: skipping empty result");
-                    } else {
-                        return ips.iter().copied().collect();
-                    }
-                }
-                Err(msg) => {
-                    warn!("ipv{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
-                }
-            };
+        if let Some(profile_name) = take_first_defined!(aws_profile) {
+            aws_config_loader = aws_config_loader.profile_name(profile_name.clone());
+        }
+        else if let Some(file_opts_ref) = maybe_file_config.as_ref() {
+            if let Some(access_key) = file_opts_ref.aws_access_key_id.as_ref() {
+                let creds = Credentials::new(
+                    access_key.clone(),
+                    file_opts_ref.aws_secret_access_key
+                        .as_ref()
+                        .expect("secret must be defined when access_key is")
+                        .clone(),
+                    None,
+                    None,
+                    "static"
+                );
+                aws_config_loader = aws_config_loader.credentials_provider(creds);
+            }
         }
 
-        if algos.len() != 0 {
-            warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
-        }
-
-        HashSet::<Ipv6Addr>::new()
+        Ok((result, aws_config_loader.into()))
     }
 
     #[cfg(test)]
@@ -814,293 +508,333 @@ impl Config {
         update_poll_interval: Duration,
         update_timeout: Duration,
         update_if_different: bool,
-        route53_record_ttl: i64
+        route53_record_ttl: i32
     ) -> Self {
-        let async_runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap()
-        ;
-        let r53client = async_runtime.block_on(
-            crate::aws_route53::get_client(
-                &None,
-                &None,
-                &None,
-                &Some("us-east-1".to_owned()),
-                false
-            )
-        );
-
         Self {
-            config_file_path: PathBuf::new(),
-            host_name: host_name.to_owned(),
-            host_name_normalized: normalize_host_name(host_name).unwrap(),
-            update_poll_interval,
-            update_timeout,
-            update_if_different,
-            ipv4_algorithms: vec!(),
-            ipv6_algorithms: vec!(),
-            route53_client: r53client,
-            route53_zone_id: "Z-NOT-A-ZONE-ID".to_owned(),
+            config_file_path: None,
+            host_name: host_name.to_string(),
+            route53_zone_id: None,
             route53_record_ttl,
-            log_file: None,
-            log_level: LevelFilter::Off,
-            log_level_other: LevelFilter::Off
+            update_timeout,
+            update_poll_interval,
+            no_update: !update_if_different,
+            ipv4_algorithms: Vec::<AlgorithmSpecification>::new(),
+            ipv6_algorithms: Vec::<AlgorithmSpecification>::new(),
+            host_name_normalized: normalize_host_name(host_name).unwrap().to_string()
         }
     }
 }
 
+fn create_console_log_dispatcher(cli_args: &CliOptions) -> Dispatch {
+    Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{} [{}] {}: {}",
+                format_rfc3339_seconds(SystemTime::now()),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .level_for(
+            env!("CARGO_CRATE_NAME"),
+            match cli_args.verbose {
+                0 => LevelFilter::Warn,
+                1 => LevelFilter::Info,
+                2 => LevelFilter::Debug,
+                _ => LevelFilter::Trace,
+            },
+        )
+        .level(match cli_args.verbosity_other {
+            0 => LevelFilter::Warn,
+            1 => LevelFilter::Info,
+            2 => LevelFilter::Debug,
+            _ => LevelFilter::Trace,
+        })
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn create_file_log_dispatcher(file_path: &Path, level: &LevelFilter, level_other: &LevelFilter) -> anyhow::Result<Dispatch> {
+    Ok(
+        Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "{} [{}] {}: {}",
+                humantime::format_rfc3339_seconds(SystemTime::now()),
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .level_for(env!("CARGO_CRATE_NAME"), *level)
+        .level(*level_other)
+        .chain(fern::log_file(file_path)?)
+    )
+}
 
-    #[derive(Deserialize, Serialize, Debug)]
-    struct SerdeDuration {
-        #[serde(with = "serde_duration_f64")]
-        timeout: Duration
+fn find_configuration_file(
+    cli_path: Option<Cow<'static, Path>>
+) -> anyhow::Result<Option<Cow<'static, Path>>> {
+    if let Some(cli_path) = cli_path {
+        if cli_path.as_os_str() == "-" {
+            // Invoking user specified "no" configuraiton file
+            return Ok(None);
+        }
+        else {
+            // Use the caller-specified configuration file
+            return Ok(Some(cli_path));
+        }
     }
 
-    #[test]
-    fn test_serialize_duration_to_json() {
-        let test_struct = SerdeDuration {timeout: Duration::from_secs_f64(1.5)};
-        let maybe_json = serde_json::to_string(&test_struct);
-        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
-        let json = maybe_json.unwrap();
-        assert_eq!(json.as_str(), "{\"timeout\":1.5}");
+    // Fall back on a search
+
+    // Check the current working directory
+    let maybe_config_path = Path::new("ddns-route53.conf");
+    if maybe_config_path.is_file() {
+        return Ok(Some(Cow::Borrowed(maybe_config_path)));
     }
 
+    #[cfg(unix)]
+    {
+        let maybe_home_dir: Option<PathBuf> = crate::os_helpers::posix::get_posix_user_home_dir()?;
+        if let Some(home_dir) = maybe_home_dir {
+            for candidate_rel_path in [
+                ".config/ddns-route53.conf",
+                ".local/share/ddns-route53.conf",
+                ".ddns-route53.conf",
+            ] {
+                let candidate = home_dir.join(candidate_rel_path);
+                if candidate.is_file() {
+                    return Ok(Some(Cow::Owned(candidate)));
+                }
+            }
+        }
 
-    #[test]
-    fn test_parse_negative_duration_from_json() {
-        let json: &str = "{\"timeout\": -1}";
-        let maybe_struct = serde_json::from_str::<SerdeDuration>(json);
-        assert!(maybe_struct.is_err(), "struct: {:?}", maybe_struct.unwrap());
-        let err = maybe_struct.unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.starts_with("value cannot be negative: "), "{:?}", msg);
+        for candidate_str in [
+            "/usr/local/etc/ddns-route53.conf",
+            "/etc/opt/ddns-route53.conf",
+            "/etc/ddns-route53.conf"
+        ] {
+            let candidate = Path::new(candidate_str);
+            if candidate.is_file() {
+                return Ok(Some(Cow::Borrowed(candidate)));
+            }
+        }
     }
 
-
-    #[derive(Deserialize, Serialize, Debug)]
-    struct SerdeEncoding {
-        #[serde(with = "serde_encoding")]
-        encoding: Option<&'static Encoding>
+    #[cfg(windows)]
+    {
+        for path in [
+            crate::os_helpers::windows::get_user_local_app_data_folder()?, // E.g., "C:\Users\John.Doe\AppData\Local"
+            crate::os_helpers::windows::get_program_data_folder()? // E.g., "C:\ProgramData"
+        ] {
+            if let Some(candidate_dir) = path {
+                let candidate = candidate_dir.join("ddns-route53.conf");
+                if candidate.is_file() {
+                    return Ok(Some(Cow::Owned(candidate)));
+                }
+            }
+        }
     }
 
-    #[test]
-    fn test_serialize_encoding_utf8() {
-        let test_struct = SerdeEncoding { encoding: Some(encoding_rs::UTF_8) };
-        let maybe_json = serde_json::to_string(&test_struct);
-        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
-        let json = maybe_json.unwrap();
-        assert_eq!(json.as_str(), "{\"encoding\":\"UTF-8\"}");
+    Err(anyhow!("Failed to find configuration file"))
+}
+
+fn get_char_representation(ch: char) -> Cow<'static, str> {
+    let ch_ord = ch as i32;
+    match ch_ord {
+        0x27 /* '\'' */ => Cow::Borrowed("\"'\""),
+        0x5C /* '\\' */ => Cow::Borrowed("'\\'"),
+        0x20..0x7F => Cow::Owned(format!("'{0}'", ch)),
+        0x0A /* '\n' */ => Cow::Borrowed("'\\n'"),
+        0x0D /* '\r' */ => Cow::Borrowed("'\\r'"),
+        0x09 /* '\t' */ => Cow::Borrowed("'\\t'"),
+        0x00..0x20 | 0x7F..=0xFF => Cow::Owned(format!("'\\x{0:02X}'", ch_ord)),
+        0x80..=0xFFFF => Cow::Owned(format!("\\u+{0:04X}'", ch_ord)),
+        _ => Cow::Owned(format!("\\U+{0:08X}'", ch_ord))
+    }
+}
+
+fn load_config_file<'a>(path: &Cow<'a, Path>) -> anyhow::Result<FileOptions> {
+    let fh = File::open(path.as_ref()).context("I/O error opening config file")?;
+    let mut reader = BufReader::new(fh);
+    let file_size = reader
+        .seek(SeekFrom::End(0))
+        .context("I/O error seeking within config file")?;
+    if MAX_CONFIG_FILE_SIZE_BYTES < file_size {
+        return Err(anyhow!(
+            "file too large: {path:?} (size {file_size} exceeds max {MAX_CONFIG_FILE_SIZE_BYTES})"
+        ));
+    }
+    if file_size != 0 {
+        reader
+            .seek(SeekFrom::Start(0))
+            .expect("seek to start should always work");
     }
 
-    #[test]
-    fn test_serialize_encoding_none() {
-        let test_struct = SerdeEncoding { encoding: None };
-        let maybe_json = serde_json::to_string(&test_struct);
-        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
-        let json = maybe_json.unwrap();
-        assert_eq!(json.as_str(), "{\"encoding\":null}");
+    let mut content = String::new();
+    content.reserve(file_size as usize);
+    reader
+        .read_to_string(&mut content)
+        .context("I/O error reading config file")?;
+
+    let config_file = toml::from_str::<FileOptions>(content.as_str()).context("failed to load config file")?;
+
+    if config_file.aws_access_key_id.is_some() {
+        if config_file.aws_secret_access_key.is_none() {
+            return Err(anyhow!("config file: Missing 'aws_secret_access_key' (required due to 'aws_access_key_id')"));
+        }
+        if config_file.common.aws_profile.is_some() {
+            return Err(anyhow!("config file: Cannot provide 'aws_profile' with 'aws_access_key_id'/'aws_secret_access_key'"));
+        }
+    }
+    else {
+        if config_file.aws_secret_access_key.is_some() {
+            return Err(anyhow!("config file: Missing 'aws_access_key_id' (required due to 'aws_secret_access_key')"));
+        }
     }
 
-    #[test]
-    fn test_deserialize_encoding_utf8() {
-        let json: &str = "{\"encoding\": \"utf-8\"}";
-        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
-        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-        let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", json);
+    Ok(config_file)
+}
 
-        let json: &str = "{\"encoding\": \"UTF-8\"}";
-        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
-        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-        let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", json);
+fn normalize_host_name(host_name: &str) -> anyhow::Result<Cow<'_, str>> {
+    let name_lower_idna = domain_to_ascii_cow(
+        host_name.as_bytes(),
+        AsciiDenyList::URL
+    )?;
+    validate_idna_host_name(name_lower_idna.as_ref())?;
 
-        let json: &str = "{\"encoding\": \"utf8\"}";
-        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
-        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-        let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", json);
+    if name_lower_idna.ends_with(".") {
+        Ok(name_lower_idna)
+    }
+    else {
+        Ok(Cow::Owned(name_lower_idna.to_string() + "."))
+    }
+}
+
+fn validate_value_in_range<T>(value: T, min: T, max: T, field_name: &str) -> anyhow::Result<T> 
+where T: Display + PartialOrd{
+    if min <= value && value <= max {
+        Ok(value)
+    }
+    else {
+        Err(anyhow!("{field_name} must be in range {min}-{max} (got {value})"))
+    }
+}
+
+fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
+    const MAX_DNS_FQDN_LENGTH: usize = 255;
+    const MAX_DNS_LABEL_LENGTH: u32 = 64;
+
+    if name.is_empty() {
+        return Err(anyhow!("invalid host_name: cannot be empty"));
+    }
+    if MAX_DNS_FQDN_LENGTH < name.len() {
+        return Err(
+            anyhow!(
+                "invalid host_name: total length cannot exceed {MAX_DNS_FQDN_LENGTH} characters (got: {0})",
+                name.len()
+            )
+        );
     }
 
-    #[test]
-    fn test_deserialize_encoding_none() {
-        let json: &str = "{\"encoding\": null}";
-        let maybe_struct = serde_json::from_str::<SerdeEncoding>(json);
-        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-        let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, None, "{:?}", json);
-    }
+    loop {
+        let mut itr = name.chars().enumerate();
+        let mut label_len: u32;
+        let mut label_num = 0u32;
+        let mut last_ch: char;
+        let mut last_ch_idx: usize;
 
+        loop {
+            label_num += 1;
+            label_len = 0;
 
-    #[derive(Deserialize, Serialize, Debug)]
-    struct SerdeUrl {
-        #[serde(with = "serde_url")]
-        url: Url
-    }
-
-    #[test]
-    fn test_serialize_url() {
-        let test_struct = SerdeUrl { url: Url::parse("https://www.google.com/").unwrap() };
-        let maybe_json = serde_json::to_string(&test_struct);
-        assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
-        let json = maybe_json.unwrap();
-        assert_eq!(json.as_str(), "{\"url\":\"https://www.google.com/\"}");
-    }
-
-    #[test]
-    fn test_deserialize_url() {
-        let json: &str = "{\"url\": \"http://localhost/\"}";
-        let maybe_struct = serde_json::from_str::<SerdeUrl>(json);
-        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-        let result = maybe_struct.unwrap();
-        assert_eq!(result.url, Url::parse("http://localhost/").unwrap(), "{:?}", json);
-    }
-
-
-    #[derive(Deserialize, Serialize, Debug)]
-    struct SerdeLevelFilter {
-        #[serde(with = "serde_levelfilter")]
-        level: LevelFilter
-    }
-
-    #[test]
-    fn test_level_filter() {
-        let tests = [
-            (LevelFilter::Error, "{\"level\":\"ERROR\"}", true),
-            (LevelFilter::Warn, "{\"level\":\"WARN\"}", true),
-            (LevelFilter::Info, "{\"level\":\"INFO\"}", true),
-            (LevelFilter::Debug, "{\"level\":\"DEBUG\"}", true),
-            (LevelFilter::Trace, "{\"level\":\"TRACE\"}", false),
-        ];
-        for (input, expected, deser_ok) in tests {
-            let test_struct = SerdeLevelFilter { level: input };
-            let maybe_json = serde_json::to_string(&test_struct);
-            assert!(maybe_json.is_ok(), "err: {:?}", maybe_json.unwrap_err());
-            let json = maybe_json.unwrap();
-            assert_eq!(json.as_str(), expected);
-
-            let maybe_struct = serde_json::from_str::<SerdeLevelFilter>(expected);
-            if deser_ok {
-                assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-                let result = maybe_struct.unwrap();
-                assert_eq!(result.level, input, "{:?}", expected);
+            // Get the first/leading character of the current label
+            if let Some((idx, ch)) = itr.next() {
+                match ch {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' => {},
+                    _ => { 
+                        return Err(anyhow!(
+                            "invalid host_name: character at offset {0} must be one of a-z, A-Z, or 0-9 (got: {1})",
+                            idx, get_char_representation(ch)
+                        ));
+                    }
+                }
+                last_ch = ch;
+                last_ch_idx = idx;
+                label_len += 1;
             }
             else {
-                assert!(maybe_struct.is_err(), "value: {:?}", expected);
-                let err = maybe_struct.unwrap_err();
-                let msg = err.to_string();
-                assert!(msg.starts_with("This level is not allowed for the log file."), "value={:?}, msg={:?}", expected, msg);
+                // Since we know the host-name wasn't completely empty (since we checked at the very top), having
+                // nothing (end of string) after a dot (separator) means it was a final, trailing dot. That is OK.
+                return Ok(());
+            }
+
+            let mut got_label_terminator = false;
+            while let Some((idx, ch)) = itr.next() {
+                match ch {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {},
+                    '.' => {
+                        last_ch_idx = idx - 1;
+                        got_label_terminator = true;
+                        break;
+                    },
+                    _ => {
+                        return Err(anyhow!(
+                            "invalid host_name: character at offset {0} must be one of a-z, A-Z, 0-9, -, or . (got: {1})",
+                            idx, get_char_representation(ch)
+                        ));
+                    }
+                }
+                last_ch = ch;
+                last_ch_idx = idx;
+                label_len += 1;
+            }
+
+            if MAX_DNS_LABEL_LENGTH <= label_len {
+                return Err(anyhow!(
+                    "invalid host_name: label {label_num} is too long (length {label_len} exceeds maximum of {MAX_DNS_LABEL_LENGTH})"
+                ));
+            }
+            if last_ch == '-' {
+                return Err(anyhow!(
+                    "invalid host_name: character at offset {last_ch_idx} ('-'): hyphens are not allowed as the final character in a label"
+                ));
+            }
+
+            if !got_label_terminator {
+                return Ok(());
             }
         }
     }
+}
 
-
-    #[derive(Deserialize, Debug)]
-    struct SerdeOptionString {
-        #[serde(deserialize_with = "deserialize_option_string", default)]
-        value: Option<String>
-    }
-
-    #[test]
-    fn test_deserialize_option_string() {
-        let tests = &[
-            ("{\"value\":null}", None),
-            ("{\"value\":\"\"}", None),
-            ("{\"value\":\"str\"}", Some(String::from("str"))),
-        ];
-        for (json, expected) in tests {
-            let maybe_struct = serde_json::from_str::<SerdeOptionString>(*json);
-            assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-            let result = maybe_struct.unwrap();
-            assert_eq!(result.value, *expected, "{:?}", *expected);
+fn validate_ip_algorithm_combination(algos: &Vec::<AlgorithmSpecification>, is_v6: bool) -> anyhow::Result<bool> {
+    let mut unique_algos = HashSet::<String>::new();
+    for algo in algos {
+        let name = format!("{algo}");
+        let err = anyhow!("algorithm '{name}' cannot be specified more than once");
+        if !unique_algos.insert(name) {
+            return Err(err);
         }
     }
 
+    if is_v6 {
+        let igd_name = format!("{}", AlgorithmSpecification::InternetGatewayProtocol { timeout: serde_default_algo_timeout() });
+        if unique_algos.contains(igd_name.as_str()) {
+            return Err(anyhow!("algorithm '{igd_name}' cannot be used with IPv6"));
+        }
+    }    
 
-    #[derive(Deserialize, Debug)]
-    struct SerdeTtl {
-        #[serde(deserialize_with = "deserialize_dns_ttl", default)]
-        value: i64
-    }
-
-    #[test]
-    fn test_deserialize_dns_ttl() {
-        let tests = &[
-            (format!("{{\"value\":{0}}}", TTL_MIN), Some(TTL_MIN)),
-            (format!("{{\"value\":{0}}}", TTL_MAX), Some(TTL_MAX)),
-            (format!("{{\"value\":{0}}}", TTL_MIN - 1), None),
-            (format!("{{\"value\":{0}}}", TTL_MAX + 1), None),
-        ];
-        for (json, expected) in tests {
-            let maybe_struct = serde_json::from_str::<SerdeTtl>((*json).as_str());
-            if let Some(expected) = *expected {
-                assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-                let result = maybe_struct.unwrap();
-                assert_eq!(result.value, expected, "{:?}", expected);
-            }
-            else {
-                assert!(maybe_struct.is_err(), "value: {:?}", maybe_struct.unwrap());
-                let err = maybe_struct.unwrap_err();
-                let msg = err.to_string();
-                assert!(msg.starts_with("DNS TTL value must be in range "), "json={:?}, msg={:?}", (*json).as_str(), msg.as_str());
-            }
+    let none_name = format!("{}", AlgorithmSpecification::None);
+    if unique_algos.contains(none_name.as_str()) {
+        if algos.len() == 1 {
+            Ok(false)
+        }
+        else {
+            Err(anyhow!("algorithm '{none_name}' cannot be included with others"))
         }
     }
-
-
-    #[test]
-    fn test_validate_idna_host_name() {
-        let tests = [
-            ("localhost", true),
-            ("www.google.com", true),
-            ("domain.", true),
-            ("xn--jxalpdlp.test", true),
-
-            (".", false),
-            ("-example", false),
-            ("example-", false),
-            ("example.-test", false),
-            ("example.-test.", false),
-            ("example.test-", false),
-            ("example.test-.", false),
-            ("*.wildcard.domain", false),
-            ("*.wildcard.domain.", false),
-            ("wildcard.*.domain", false),
-            ("123456789012345678901234567890123456789012345678901234567890123", true),
-            ("1234567890123456789012345678901234567890123456789012345678901234", false)
-        ];
-        for (host_name, expect_valid) in tests {
-            let result= Config::validate_idna_host_name(host_name);
-            if expect_valid {
-                assert!(result.is_ok(), "err: {:?}", result.unwrap_err());
-            }
-            else {
-                assert!(result.is_err(), "host_name: {:?}", host_name);
-                let err = result.unwrap_err();
-                let msg = err.to_string();
-                assert!(msg.starts_with("invalid host name: "));
-            }
-        }
-    }
-
-
-    #[test]
-    fn test_normalize_host_name() {
-        let tests = [
-            ("example.com", "example.com."),
-            ("EXAMPLE.COM", "example.com."),
-            ("España.Example.Com", "xn--espaa-rta.example.com.")
-        ];
-
-        for (host_name, expected_normlization) in tests {
-            let result = normalize_host_name(host_name).unwrap();
-            assert_eq!(result, expected_normlization, "{:?}", host_name);
-        }
+    else {
+        Ok(algos.len() != 0)
     }
 }

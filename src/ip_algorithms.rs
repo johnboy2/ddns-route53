@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: [MIT] OR [Apache-2.0]
 
 use std::cmp::Eq;
-use std::fmt::{Debug, Display};
+use std::collections::HashSet;
+use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::marker::Send;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -29,6 +30,8 @@ static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
 static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
     LazyLock::new(|| ClientBuilder::new().build());
+
+use crate::config::{AlgorithmSpecification, Config};
 
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
 const MAX_PLUGIN_DOCUMENT_LENGTH: u64 = 65535;
@@ -321,6 +324,38 @@ pub enum StringOrStringVec {
     Vec(Vec<String>),
 }
 
+impl Display for StringOrStringVec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        const MAX_STR_LEN: usize = 32;
+
+        match self {
+            StringOrStringVec::String(s) => {
+                if s.len() <= MAX_STR_LEN {
+                    f.write_str(s.as_str())?;
+                }
+                else {
+                    let substr: String = s.chars().take(MAX_STR_LEN - 1).collect();
+                    f.write_str(substr.as_str())?;
+                    f.write_str("…")?;
+                }
+            },
+            StringOrStringVec::Vec(v) => {
+                if !v.is_empty() {
+                    if v[0].len() <= MAX_STR_LEN {
+                        f.write_str(v[0].as_str())?;
+                        f.write_str(" …")?;
+                    } else {
+                        let substr: String = v[0].chars().take(MAX_STR_LEN - 1).collect();
+                        f.write_str(substr.as_str())?;
+                        f.write_str("…")?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 struct PluginEncoding<'a> {
     data: &'a [u8],
     encoding: &'static Encoding
@@ -601,6 +636,108 @@ where
     }
 
     Ok(result)
+}
+
+pub async fn get_ipv4_addresses(config: &Config) -> HashSet<Ipv4Addr> {
+    let algos = &config.ipv4_algorithms;
+    let ip_version = '4';
+
+    for (idx, algo) in algos.iter().enumerate() {
+        debug!("ipv{ip_version}_algorithms[{idx}]: Trying algorithm: {algo:?}");
+
+        let algo_result = match algo {
+            AlgorithmSpecification::None => {
+                panic!("Unreachable code was somehow reached")
+            },
+            AlgorithmSpecification::DefaultPublicIp => {
+                crate::ip_algorithms::get_default_public_ipv4().await
+            }
+            AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
+                crate::ip_algorithms::get_igd_ipv4(timeout).await
+            }
+            AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
+                crate::ip_algorithms::get_web_service_ip::<Ipv4Addr>(url, timeout, *default_encoding).await
+            }
+            AlgorithmSpecification::Plugin { command, timeout, encoding } => {
+                crate::ip_algorithms::get_plugin_ip::<Ipv4Addr>(command, timeout, *encoding).await
+            }
+        };
+
+        match algo_result {
+            Ok(ips) => {
+                debug!(
+                    "ipv{ip_version}_algorithms[{idx}]: got addresses: {:?}",
+                    &ips
+                );
+                if ips.is_empty() {
+                    debug!("ipv{ip_version}_algorithms[{idx}]: skipping empty result");
+                } else {
+                    return ips.iter().copied().collect();
+                }
+            }
+            Err(msg) => {
+                warn!("ipv{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
+            }
+        };
+    }
+
+    if algos.len() != 0 {
+        warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+    }
+
+    HashSet::<Ipv4Addr>::new()
+}
+
+pub async fn get_ipv6_addresses(config: &Config) -> HashSet<Ipv6Addr> {
+    let algos = &config.ipv6_algorithms;
+    let ip_version = '6';
+
+    for (idx, algo) in algos.iter().enumerate() {
+        debug!("ipv{ip_version}_algorithms[{idx}]: Trying algorithm: {algo:?}");
+
+        let algo_result = match algo {
+            AlgorithmSpecification::None => {
+                panic!("Unreachable code was somehow reached")
+            },
+            AlgorithmSpecification::DefaultPublicIp => {
+                crate::ip_algorithms::get_default_public_ipv6().await
+            }
+            AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
+                Err::<Vec<Ipv6Addr>, anyhow::Error>(anyhow!(
+                    "internet_gateway_device algorithm is not implemented for IPv6"
+                ))
+            }
+            AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
+                crate::ip_algorithms::get_web_service_ip::<Ipv6Addr>(url, timeout, *default_encoding).await
+            }
+            AlgorithmSpecification::Plugin { command, timeout, encoding } => {
+                crate::ip_algorithms::get_plugin_ip::<Ipv6Addr>(command, timeout, *encoding).await
+            }
+        };
+
+        match algo_result {
+            Ok(ips) => {
+                debug!(
+                    "ipv{ip_version}_algorithms[{idx}]: got addresses: {:?}",
+                    &ips
+                );
+                if ips.is_empty() {
+                    debug!("ipv{ip_version}_algorithms[{idx}]: skipping empty result");
+                } else {
+                    return ips.iter().copied().collect();
+                }
+            }
+            Err(msg) => {
+                warn!("ipv{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
+            }
+        };
+    }
+
+    if algos.len() != 0 {
+        warn!("ipv{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+    }
+
+    HashSet::<Ipv6Addr>::new()
 }
 
 
