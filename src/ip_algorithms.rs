@@ -637,7 +637,7 @@ where
 
     let mut result = Vec::<T>::new();
     for line in body.as_str().lines() {
-        trace!("Received result: {:?}", line);
+        trace!("web service result: {:?}", line);
         let ip = match T::from_str(line) {
             Ok(result) => result,
             Err(e) => {
