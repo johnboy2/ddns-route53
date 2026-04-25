@@ -1,9 +1,9 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, anyhow};
@@ -11,18 +11,15 @@ use aws_config::ConfigLoader;
 use aws_sdk_route53::config::Credentials;
 use aws_types::region::Region;
 use clap::{Args, ArgAction, Parser, ValueHint};
-use encoding_rs::Encoding;
 use fern::Dispatch;
 use humantime::format_rfc3339_seconds;
 use idna::{AsciiDenyList, domain_to_ascii_cow};
-use log::{LevelFilter, error};
-use serde::{Deserialize, Serialize};
-use reqwest::Url;
+use log::{LevelFilter, debug};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
-use crate::ip_algorithms::StringOrStringVec;
+use crate::ip_algorithms::AlgorithmSpecification;
 
 
-const DEFAULT_ALGO_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_UPDATE_POLL_SECS: f64 = 30.0;
 const DEFAULT_UPDATE_TIMEOUT_SECS: f64 = 300.0;
 const DEFAULT_ROUTE53_TLL: i32 = 3600;
@@ -33,78 +30,9 @@ const MAX_UPDATE_POLL_SECONDS: f64 = 3600.0;
 const MAX_UPDATE_TIMEOUT_SECONDS: f64 = 86400.0;
 const MIN_UPDATE_POLL_SECONDS: f64 = 0.0;
 const MIN_UPDATE_TIMEOUT_SECONDS: f64 = 0.0;
+const MIN_TTL: i32 = 0;
+const MAX_TTL: i32 = 2147483647;
 
-
-fn serde_default_algo_timeout() -> Duration { Duration::from_secs(DEFAULT_ALGO_TIMEOUT_SECS) }
-
-
-mod serde_duration_f64 {
-    use serde::de::Error;
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::time::Duration;
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let v = f64::deserialize(deserializer)?;
-        if v < 0.0 {
-            Err(D::Error::custom(format!("value cannot be negative: {v}")))
-        } else {
-            Ok(Duration::from_secs_f64(v))
-        }
-    }
-
-    pub fn serialize<S>(d: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_f64(d.as_secs_f64())
-    }
-}
-
-mod serde_encoding {
-    use encoding_rs::Encoding;
-    use serde::de::Error;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<&'static Encoding>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        if let Some(s) = Option::<String>::deserialize(deserializer)? {
-            let sb = s.trim_ascii().as_bytes();
-
-            // encoding_rs seems not to recognize some common UTF-16 aliases, so we
-            // give it a hand here with a few of our own, custom translations.
-            let sb: &[u8] = match sb {
-                b"utf16" => b"utf-16",
-                b"utf16le" | b"utf-16-le" => b"utf-16le",
-                b"utf16be" | b"utf-16-be" => b"utf-16be",
-                _ => sb
-            };
-
-            Encoding::for_label(sb)
-            .map(|e| Some(e))
-            .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
-        }
-        else {
-            Ok(None)
-        }
-    }
-
-    pub fn serialize<S>(encoding: &Option<&'static Encoding>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if let Some(e) = encoding {
-            serializer.serialize_str(e.name())
-        }
-        else {
-            serializer.serialize_none()
-        }
-    }
-}
 
 mod serde_levelfilter {
     use std::str::FromStr;
@@ -137,203 +65,272 @@ mod serde_levelfilter {
     }
 }
 
-mod serde_url {
-    use reqwest::Url;
-    use serde::de::Error;
-    use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Url, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Url::parse(&s).map_err(|e| {
-            D::Error::custom(format!("could not parse url: \"{s}\": {}", e.to_string()))
-        })
-    }
+// Our CommonOptions struct has a lot of fields that are shared between the CLI and the configuration file, so we want
+// to use the same logic for validating each regardless of source (i.e., CLI or config file). These functions help us
+// do that, by providing a way to validate and parse each field consistently.
+//
+// The parse_*() functions are for the CLI arg parsing.
+// The deser_*() functions are for deserializing from the configuration file (they use the corresponding parse_*()
+// function internally for consistent behavior).
+//
+// The various traits and structs are used to provide field-details. (Serde doesn't provide a way to include field-
+// specific details within the deserialization functions -- but do allow passing additional generic parameters; so
+// we leverage that mechanism to pass these details.)
 
-    pub fn serialize<S>(url: &Url, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(url.as_str())
-    }
+trait FieldNameString {
+    fn name() -> &'static str;
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(tag = "type")]
-pub enum AlgorithmSpecification {
-    #[serde(rename = "none")]
-    None,
-
-    #[serde(rename = "default_public_ip")]
-    DefaultPublicIp,
-
-    #[serde(rename = "internet_gateway_protocol")]
-    InternetGatewayProtocol {
-        #[serde(
-            rename = "timeout_seconds",
-            with = "serde_duration_f64",
-            default = "serde_default_algo_timeout"
-        )]
-        timeout: Duration,
-    },
-
-    #[serde(rename = "web_service")]
-    WebService {
-        #[serde(with = "serde_url")]
-        url: Url,
-
-        #[serde(
-            rename = "timeout_seconds",
-            with = "serde_duration_f64",
-            default = "serde_default_algo_timeout"
-        )]
-        timeout: Duration,
-
-        #[serde(default, with = "serde_encoding")]
-        default_encoding: Option<&'static Encoding>
-    },
-
-    #[serde(rename = "plugin")]
-    Plugin {
-        command: StringOrStringVec,
-
-        #[serde(
-            rename = "timeout_seconds",
-            with = "serde_duration_f64",
-            default = "serde_default_algo_timeout"
-        )]
-        timeout: Duration,
-
-        #[serde(default, with = "serde_encoding")]
-        encoding: Option<&'static Encoding>
-    },
+struct FieldAwsProfile {}
+impl FieldNameString for FieldAwsProfile {
+    fn name() -> &'static str { "aws_profile" }
 }
 
-impl Debug for AlgorithmSpecification {
-    // For debugging purposes, we want a concise description of each algorithm with all the details.
-    // Serializing to (compact) TOML gives us that.
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        toml::to_string(&self)
-            .map_err(|e| {
-                error!(
-                    "Failed to serialize AlgorithmSpecification: {}",
-                    e.to_string()
-                );
-                std::fmt::Error
-            })
-            .and_then(|s| f.write_str(s.as_str()))
+struct FieldAwsRegion {}
+impl FieldNameString for FieldAwsRegion {
+    fn name() -> &'static str { "aws_region" }
+}
+
+struct FieldAwsAccessKeyId {}
+impl FieldNameString for FieldAwsAccessKeyId {
+    fn name() -> &'static str { "aws_access_key_id" }
+}
+
+struct FieldAwsSecretAccessKey {}
+impl FieldNameString for FieldAwsSecretAccessKey {
+    fn name() -> &'static str { "aws_secret_access_key" }
+}
+
+fn parse_nonempty_string<FieldParams>(value: &str) -> anyhow::Result<String>
+where
+    FieldParams: FieldNameString,
+{
+    if value.is_empty() {
+        Err(anyhow!("value for {0} cannot be empty", FieldParams::name()))
+    }
+    else {
+        Ok(value.to_string())
     }
 }
 
-impl Display for AlgorithmSpecification {
-    // For display purposes, we want a *simple* description of each algorithm, without unnecessary details.
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            Self::None => f.write_str("none"),
-            Self::DefaultPublicIp => f.write_str("default_public_ip"),
-            Self::InternetGatewayProtocol {
-                timeout: _
-            } => write!(f, "internet_gateway_protocol"),
-            Self::WebService {
-                url,
-                timeout: _,
-                default_encoding: _
-            } => write!(f, "web_service:\"{}\"", url.as_str()),
-            Self::Plugin {
-                command,
-                timeout: _,
-                encoding: _
-            } => write!(f, "plugin:\"{command}\"")
+fn deser_nonempty_string<'de, D, FieldParams>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+    FieldParams: FieldNameString,
+{
+    if let Some(value) = Option::<String>::deserialize(deserializer)?.as_ref() {
+        parse_nonempty_string::<FieldParams>(value.as_str())
+        .map(|r| Some(r))
+        .map_err(|e| D::Error::custom(e.to_string()))
+    }
+    else {
+        Ok(None)
+    }
+}
+
+
+trait NumericFieldParameters {
+    type OutputType;
+
+    fn name() -> &'static str;
+    fn type_name_singular() -> &'static str;
+    fn min() -> Self::OutputType;
+    fn max() -> Self::OutputType;
+}
+
+struct FieldTTL {}
+impl NumericFieldParameters for FieldTTL {
+    type OutputType = i32;
+
+    fn name() -> &'static str { "route53_record_ttl" }
+    fn type_name_singular() -> &'static str { "an integer"}
+    fn min() -> Self::OutputType { MIN_TTL }
+    fn max() -> Self::OutputType { MAX_TTL }
+}
+
+// This function ensures very large numbers are treated the same as any other "out-of-range" value, rather than
+// overflowing or emitting some other, less-graceful error.
+fn parse_ranged_number<FieldParams>(value: &str) -> anyhow::Result<FieldParams::OutputType>
+where
+    FieldParams: NumericFieldParameters,
+    <FieldParams as NumericFieldParameters>::OutputType: Display + FromStr + PartialOrd,
+{
+    if let Ok(result) = value.parse::<FieldParams::OutputType>() {
+        if FieldParams::min() <= result && result <= FieldParams::max() {
+            return Ok(result);
         }
     }
+
+    return Err(anyhow!(
+        "value for {0} must be {1} in the range {2}-{3}",
+        FieldParams::name(), FieldParams::type_name_singular(), FieldParams::min(), FieldParams::max()
+    ));
+}
+
+// This function ensures very large numbers are treated the same as any other "out-of-range" value, rather than
+// overflowing or emitting some other, less-graceful error.
+fn deser_ranged_number<'de, D, FieldParams>(deserializer: D) -> Result<Option<FieldParams::OutputType>, D::Error>
+where
+    D: Deserializer<'de>,
+    FieldParams: NumericFieldParameters,
+    <FieldParams as NumericFieldParameters>::OutputType: Deserialize<'de> + Display + FromStr + PartialOrd,
+{
+    if let Ok(value) = FieldParams::OutputType::deserialize(deserializer) {
+        if FieldParams::min() <= value && value <= FieldParams::max() {
+            return Ok(Some(value));
+        }
+    }
+    
+    Err(D::Error::custom(format!(
+        "value for {0} must be {1} in the range {2}-{3}",
+        FieldParams::name(), FieldParams::type_name_singular(), FieldParams::min(), FieldParams::max()
+    )))
 }
 
 
-#[derive(Args, Deserialize)]
+struct FieldUpdateTimeout {}
+impl NumericFieldParameters for FieldUpdateTimeout {
+    type OutputType = f64;
+
+    fn name() -> &'static str { "route53_update_timeout" }
+    fn type_name_singular() -> &'static str { "a number" }
+    fn min() -> Self::OutputType { MIN_UPDATE_TIMEOUT_SECONDS }
+    fn max() -> f64 { MAX_UPDATE_TIMEOUT_SECONDS }
+}
+
+struct FieldUpdatePollInterval {}
+impl NumericFieldParameters for FieldUpdatePollInterval {
+    type OutputType = f64;
+
+    fn name() -> &'static str { "route53_update_poll_interval" }
+    fn type_name_singular() -> &'static str { "a number" }
+    fn min() -> Self::OutputType { MIN_UPDATE_POLL_SECONDS }
+    fn max() -> Self::OutputType { MAX_UPDATE_POLL_SECONDS }
+}
+
+
+#[derive(Args, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct CommonOptions {
-    /// The fully-qualified domain name of the host to update. (This must be specified in either a configuration file or on the command-line.)
-    #[arg(short='h', long)]
+    /// The fully-qualified domain name of the host to update. (This must be specified in either a configuration file
+    /// or on the command-line.)
+    #[arg(short='n', long)]
     pub host_name: Option<String>,
 
-    /// (Optional) The Route53 zone ID within AWS to keep up to date. If not specified, the utility will attempt to resolve this dynamically.
-    #[arg(short='z', long)]
-    pub route53_zone_id: Option<String>,
+    /// (Optional) The Route53 zone ID within AWS to keep up to date. If not specified, the utility will attempt to
+    /// resolve this dynamically
+    #[arg(short='z', long, value_name = "ZONE_ID")]
+    pub aws_route53_zone_id: Option<String>,
 
-    /// The TTL use when updating the applicable Route53 resource record(s). Defaults to 3600 unless overridden by a configuration file.
-    #[arg(short='t', long)]
-    pub route53_record_ttl: Option<i32>,
+    /// The TTL use when updating the applicable Route53 resource record(s). Defaults to 3600 unless overridden by a
+    /// configuration file
+    #[arg(short='t', long, value_name = "N", value_parser = parse_ranged_number::<FieldTTL>)]
+    pub aws_route53_record_ttl: Option<i32>,
 
-    /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 300 unless overridden by a configuration file.
-    #[arg(short='w', long)]
+    /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 300 unless
+    /// overridden by a configuration file
+    #[arg(short='w', long, value_name = "N", value_parser = parse_ranged_number::<FieldUpdateTimeout>)]
+    #[serde(deserialize_with = "deser_ranged_number::<_, FieldUpdateTimeout>")]
     pub update_timeout_seconds: Option<f64>,
 
-    /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 30 unless overridden by a configuration file.
-    #[arg(short='s', long)]
+    /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 30 unless
+    /// overridden by a configuration file
+    #[arg(short='s', long, value_name = "N", value_parser = parse_ranged_number::<FieldUpdatePollInterval>)]
+    #[serde(deserialize_with = "deser_ranged_number::<_, FieldUpdatePollInterval>")]
     pub update_poll_seconds: Option<f64>,
 
-    /// Use a specific profile from your (AWS) credential file.
-    #[arg(long)]
+    /// Use a specific profile from your (AWS) credential file
+    #[arg(short='p', long, value_name = "PROFILE", value_parser = parse_nonempty_string::<FieldAwsProfile>)]
+    #[serde(deserialize_with = "deser_nonempty_string::<_, FieldAwsProfile>")]
     pub aws_profile: Option<String>,
 
-    /// Use an AWS region for Route53 API calls. If omitted, this usually defaults to "us-east-1" (depends on your local Route53 SDK configuration).
-    #[arg(long)]
+    /// Use an AWS region for Route53 API calls. If omitted, this usually defaults to "us-east-1" (depends on your
+    /// local Route53 SDK configuration)
+    #[arg(short='r', long, value_name = "REGION", value_parser = parse_nonempty_string::<FieldAwsRegion>)]
+    #[serde(deserialize_with = "deser_nonempty_string::<_, FieldAwsRegion>")]
     pub aws_region: Option<String>,
 
-    /// (Optional) File-path at which to log events or actions related to this utility's execution. This may be used either instead of, or in addition to, console logging.
-    #[arg(short='f', long, value_hint = ValueHint::FilePath)]
+    /// (Optional) File-path at which to log events or actions related to this utility's execution. This may be used
+    /// either instead of, or in addition to, console logging
+    #[arg(short='f', long, value_hint = ValueHint::FilePath, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 
-    /// (Optional) Set the logging-level of this tool to the `log_file`. Must be one of "off", "error", "warn", "info", or "debug". (This DOES NOT affect console-output verbosity.) Defaults to "info".
-    #[arg(short='l', long, value_parser = clap::value_parser!(LevelFilter))]
+    /// (Optional) Set the logging-level of this tool to the `log_file`. Must be one of "off", "error", "warn", "info",
+    /// or "debug". (This DOES NOT affect console-output verbosity.) Defaults to "info"
+    #[arg(short='l', long, value_parser = clap::value_parser!(LevelFilter), value_name = "LEVEL")]
     #[serde(with = "serde_levelfilter")]
     pub log_level: Option<LevelFilter>,
 
-    /// (Optional) Set the logging-level of other libraries this tool uses internally to the `log_file`. Must be one of "off", "error", "warn", "info", or "debug". (This DOES NOT affect console-output verbosity.) Defaults to "off".
-    #[arg(short='o', long, value_parser = clap::value_parser!(LevelFilter))]
+    /// (Optional) Set the logging-level of other libraries this tool uses internally to the `log_file`. Must be one of
+    /// "off", "error", "warn", "info", or "debug". (This DOES NOT affect console-output verbosity.) Defaults to "off"
+    #[arg(short='o', long, value_parser = clap::value_parser!(LevelFilter), value_name = "LEVEL")]
     #[serde(with = "serde_levelfilter")]
     pub log_level_other: Option<LevelFilter>,
 
-    #[arg(long="ipv4", action=ArgAction::Append, value_parser = |arg: &str| toml::from_str::<AlgorithmSpecification>(arg))]
+    /// (Optional) The IPv4 algorithms to use when determining the public IPv4 address. If omitted, the utility will
+    /// assume that no IPv4 addresses are present. Each entry must be a TOML-formatted inline table. See the
+    /// "ddns-route53.conf" example file for per-algorithm content details and examples
+    #[arg(
+        short='4', long="ipv4", action=ArgAction::Append, value_name = "ALGO",
+        value_parser = |arg: &str| toml::from_str::<AlgorithmSpecification>(arg)
+    )]
     pub ipv4_algorithms: Option<Vec<AlgorithmSpecification>>,
 
-    #[arg(long="ipv6", action=ArgAction::Append, value_parser = |arg: &str| toml::from_str::<AlgorithmSpecification>(arg))]
+    /// (Optional) The IPv6 algorithms to use when determining the public IPv6 address. If omitted, the utility will
+    /// assume that no IPv6 addresses are present. Each entry must be a TOML-formatted inline table. See the
+    /// "ddns-route53.conf" example file for per-algorithm content details and examples
+    #[arg(
+        short='6', long="ipv6", action=ArgAction::Append, value_name = "ALGO",
+        value_parser = |arg: &str| toml::from_str::<AlgorithmSpecification>(arg)
+    )]
     pub ipv6_algorithms: Option<Vec<AlgorithmSpecification>>,
 }
 
 
 #[derive(Parser)]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct CliOptions {
-    #[command(flatten)]
-    pub common: CommonOptions,
-
-    /// Specify a configuration file path. If omitted, it will search a default set of paths for the file to use. Pass the special value '-' to disable use of a configuration file.
-    #[arg(short='c', long, value_hint = ValueHint::FilePath)]
+    /// Specify a configuration file path. If omitted, it will search a default set of paths for the file to use.
+    /// (Pass the special value '-' to disable use of a configuration file.)
+    #[arg(short='c', long, value_hint = ValueHint::FilePath, value_name = "PATH")]
     pub config_path: Option<std::path::PathBuf>,
 
-    /// Do not update Route53, even if its current value is wrong.
-    #[arg(short='n', long)]
+    /// Do not update Route53, even if its current value is wrong
+    #[arg(short='u', long)]
     pub no_update: bool,
 
-    /// Increase console logging verbosity (may be used more than once).
+    /// Increase console logging verbosity (may be used more than once)
     #[arg(short='v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Increase console logging for dependent libraries (may be used more than once)
+    /// Increase console logging for dependent libraries (may be used more than once); You generally shouldn't need this
     #[arg(long, action = clap::ArgAction::Count)]
     pub verbosity_other: u8,
+
+    #[command(flatten)]
+    pub common: CommonOptions,
 }
 
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct FileOptions {
     #[serde(flatten)]
     pub common: CommonOptions,
 
+    #[serde(deserialize_with = "deser_nonempty_string::<_, FieldAwsAccessKeyId>")]
     pub aws_access_key_id: Option<String>,
 
+    #[serde(deserialize_with = "deser_nonempty_string::<_, FieldAwsSecretAccessKey>")]
     pub aws_secret_access_key: Option<String>,
+}
+
+
+fn serialize_duration_as_secs<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where S: Serializer
+{
+    serializer.serialize_f64(duration.as_secs_f64())
 }
 
 
@@ -343,8 +340,13 @@ pub struct Config {
     pub host_name: String,
     pub route53_zone_id: Option<String>,
     pub route53_record_ttl: i32,
+
+    #[serde(rename = "update_timeout_seconds", serialize_with = "serialize_duration_as_secs")]
     pub update_timeout: Duration,
+
+    #[serde(rename = "update_poll_interval_seconds", serialize_with = "serialize_duration_as_secs")]
     pub update_poll_interval: Duration,
+
     pub no_update: bool,
     pub ipv4_algorithms: Vec<AlgorithmSpecification>,
     pub ipv6_algorithms: Vec<AlgorithmSpecification>,
@@ -358,7 +360,6 @@ impl Config {
         let cli_args = CliOptions::parse();
         let maybe_file_config: Option<FileOptions>;
         let mut result = Self { ..Default::default() };
-
         let console_log_dispatcher = create_console_log_dispatcher(&cli_args);
 
         match find_configuration_file(
@@ -394,6 +395,9 @@ impl Config {
 
         // Finish setting up logging (console and/or file)
 
+        // This helper macro takes a single option name (without quotes) and checks for it first on the CLI args, then
+        // in the config file (if given), and returns the first corresponding value it finds. This allows CLI args to
+        // override config file values, while still allowing config files to set various baselines.
         macro_rules! take_first_defined {
             ($name:ident) => { cli.$name.as_ref().or(file.map(|o| o.$name.as_ref()).flatten()) }
         }
@@ -432,98 +436,92 @@ impl Config {
         ;
         result.host_name_normalized = normalize_host_name(result.host_name.as_str())?.to_string();
 
-        result.route53_record_ttl = *take_first_defined!(route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
+        result.route53_record_ttl = *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
         if result.route53_record_ttl < 0 {
             return Err(anyhow!("route53_record_ttl cannot be negative: {0}", result.route53_record_ttl));
         }
 
         result.update_timeout = Duration::from_secs_f64(
-            validate_value_in_range(
-                *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS),
-                MIN_UPDATE_TIMEOUT_SECONDS,
-                MAX_UPDATE_TIMEOUT_SECONDS,
-                "update_timeout"
-            )?
+            *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS)            
         );
 
         result.update_poll_interval = Duration::from_secs_f64(
-            validate_value_in_range(
-                *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
-                MIN_UPDATE_POLL_SECONDS,
-                MAX_UPDATE_POLL_SECONDS,
-                "update_poll"
-            )?
+            *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
         );
 
         result.no_update = cli_args.no_update;
 
-        if let Some(zone_id) = take_first_defined!(route53_zone_id) {
+        if let Some(zone_id) = take_first_defined!(aws_route53_zone_id) {
             result.route53_zone_id = Some(zone_id.clone());
         }
 
         if let Some(ip_algos) = take_first_defined!(ipv4_algorithms) {
-            if validate_ip_algorithm_combination(ip_algos, false)? {
+            // Only take them if it isn't JUST the 'None' algorithm
+            let has_none_only = ip_algos.len() == 1 && match ip_algos[0] {
+                AlgorithmSpecification::None => true,
+                _ => false
+            };
+            if !has_none_only {
+                AlgorithmSpecification::validate_combination(ip_algos.as_slice(), false)?;
                 result.ipv4_algorithms = ip_algos.clone();
             }
         }
 
         if let Some(ip_algos) = take_first_defined!(ipv6_algorithms) {
-            if validate_ip_algorithm_combination(ip_algos, true)? {
+            // Only take them if it isn't JUST the 'None' algorithm
+            let has_none_only = ip_algos.len() == 1 && match ip_algos[0] {
+                AlgorithmSpecification::None => true,
+                _ => false
+            };
+            if !has_none_only {
+                AlgorithmSpecification::validate_combination(ip_algos.as_slice(), true)?;
                 result.ipv6_algorithms = ip_algos.clone();
             }
         }
 
-        let maybe_aws_region = take_first_defined!(aws_region);
-
         let mut aws_config_loader = aws_config::from_env();
-        if let Some(aws_region) = maybe_aws_region {
+
+        if let Some(aws_region) = take_first_defined!(aws_region) {
             aws_config_loader = aws_config_loader.region(Region::new(aws_region.clone()));
         }
 
-        if let Some(profile_name) = take_first_defined!(aws_profile) {
-            aws_config_loader = aws_config_loader.profile_name(profile_name.clone());
+        if let Some(aws_profile) = cli_args.common.aws_profile.as_ref() {
+            // The CLI only allows a profile (not explicit credentials); so no conflicts are possible.
+            aws_config_loader = aws_config_loader.profile_name(aws_profile.clone());
         }
         else if let Some(file_opts_ref) = maybe_file_config.as_ref() {
-            if let Some(access_key) = file_opts_ref.aws_access_key_id.as_ref() {
+            if file_opts_ref.aws_access_key_id.is_some() || file_opts_ref.aws_secret_access_key.is_some() {
+                // If the config file specifies either a key or a secret, then it must specify both (because the AWS
+                // SDK will throw an error if you provide only one of them).
+                let access_key = file_opts_ref.aws_access_key_id.as_ref()
+                    .ok_or(anyhow!("aws_access_key_id must be provided when aws_secret_access_key is given"))?;
+                let secret_key = file_opts_ref.aws_secret_access_key.as_ref()
+                    .ok_or(anyhow!("aws_secret_access_key must be provided when aws_access_key_id is given"))?;
+
+                if file_opts_ref.common.aws_profile.is_some() {
+                    return Err(anyhow!(
+                        "The configuration file cannot specify both a profile and explicit credentials."
+                    ));
+                }
+
                 let creds = Credentials::new(
                     access_key.clone(),
-                    file_opts_ref.aws_secret_access_key
-                        .as_ref()
-                        .expect("secret must be defined when access_key is")
-                        .clone(),
+                    secret_key.clone(),
                     None,
                     None,
                     "static"
                 );
                 aws_config_loader = aws_config_loader.credentials_provider(creds);
             }
+            else if let Some(profile_name) = file_opts_ref.common.aws_profile.as_ref() {
+                aws_config_loader = aws_config_loader.profile_name(profile_name.clone());
+            }
         }
 
         Ok((result, aws_config_loader.into()))
     }
-
-    #[cfg(test)]
-    pub fn build_test_config(
-        host_name: &str,
-        update_poll_interval: Duration,
-        update_timeout: Duration,
-        update_if_different: bool,
-        route53_record_ttl: i32
-    ) -> Self {
-        Self {
-            config_file_path: None,
-            host_name: host_name.to_string(),
-            route53_zone_id: None,
-            route53_record_ttl,
-            update_timeout,
-            update_poll_interval,
-            no_update: !update_if_different,
-            ipv4_algorithms: Vec::<AlgorithmSpecification>::new(),
-            ipv6_algorithms: Vec::<AlgorithmSpecification>::new(),
-            host_name_normalized: normalize_host_name(host_name).unwrap().to_string()
-        }
-    }
 }
+
 
 fn create_console_log_dispatcher(cli_args: &CliOptions) -> Dispatch {
     Dispatch::new()
@@ -551,9 +549,14 @@ fn create_console_log_dispatcher(cli_args: &CliOptions) -> Dispatch {
             2 => LevelFilter::Debug,
             _ => LevelFilter::Trace,
         })
+        .chain(std::io::stdout())
 }
 
-fn create_file_log_dispatcher(file_path: &Path, level: &LevelFilter, level_other: &LevelFilter) -> anyhow::Result<Dispatch> {
+fn create_file_log_dispatcher(
+    file_path: &Path,
+    level: &LevelFilter,
+    level_other: &LevelFilter
+) -> anyhow::Result<Dispatch> {
     Ok(
         Dispatch::new()
         .format(|out, message, record| {
@@ -636,7 +639,8 @@ fn find_configuration_file(
         }
     }
 
-    Err(anyhow!("Failed to find configuration file"))
+    debug!("No configuration file found at any of the default search paths");
+    Ok(None)
 }
 
 fn get_char_representation(ch: char) -> Cow<'static, str> {
@@ -681,10 +685,14 @@ fn load_config_file<'a>(path: &Cow<'a, Path>) -> anyhow::Result<FileOptions> {
 
     if config_file.aws_access_key_id.is_some() {
         if config_file.aws_secret_access_key.is_none() {
-            return Err(anyhow!("config file: Missing 'aws_secret_access_key' (required due to 'aws_access_key_id')"));
+            return Err(anyhow!(
+                "config file: Missing 'aws_secret_access_key' (required due to 'aws_access_key_id')"
+            ));
         }
         if config_file.common.aws_profile.is_some() {
-            return Err(anyhow!("config file: Cannot provide 'aws_profile' with 'aws_access_key_id'/'aws_secret_access_key'"));
+            return Err(anyhow!(
+                "config file: Cannot provide 'aws_profile' with 'aws_access_key_id'/'aws_secret_access_key'"
+            ));
         }
     }
     else {
@@ -708,16 +716,6 @@ fn normalize_host_name(host_name: &str) -> anyhow::Result<Cow<'_, str>> {
     }
     else {
         Ok(Cow::Owned(name_lower_idna.to_string() + "."))
-    }
-}
-
-fn validate_value_in_range<T>(value: T, min: T, max: T, field_name: &str) -> anyhow::Result<T> 
-where T: Display + PartialOrd{
-    if min <= value && value <= max {
-        Ok(value)
-    }
-    else {
-        Err(anyhow!("{field_name} must be in range {min}-{max} (got {value})"))
     }
 }
 
@@ -808,33 +806,206 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
     }
 }
 
-fn validate_ip_algorithm_combination(algos: &Vec::<AlgorithmSpecification>, is_v6: bool) -> anyhow::Result<bool> {
-    let mut unique_algos = HashSet::<String>::new();
-    for algo in algos {
-        let name = format!("{algo}");
-        let err = anyhow!("algorithm '{name}' cannot be specified more than once");
-        if !unique_algos.insert(name) {
-            return Err(err);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize, Debug, Default)]
+    #[serde(default)]
+    struct SerdeLevelFilter {
+        #[serde(with = "serde_levelfilter")]
+        level: Option<LevelFilter>
+    }
+
+    #[test]
+    fn test_level_filter() {
+        let tests = [
+            (Some(LevelFilter::Error), "level = \"ERROR\"", true),
+            (Some(LevelFilter::Warn), "level = \"WARN\"", true),
+            (Some(LevelFilter::Info), "level = \"INFO\"", true),
+            (Some(LevelFilter::Debug), "level = \"DEBUG\"", true),
+            (Some(LevelFilter::Trace), "level = \"TRACE\"", false),
+            (Some(LevelFilter::Off), "level = \"OFF\"", true),
+        ];
+        for (expected, input, deser_ok) in tests {
+            let maybe_struct = toml::from_str::<SerdeLevelFilter>(input);
+            if deser_ok {
+                assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+                let result = maybe_struct.unwrap();
+                assert_eq!(result.level, expected, "{:?}", expected);
+            }
+            else {
+                assert!(maybe_struct.is_err(), "value: {:?}, result:{:?}", expected, maybe_struct.unwrap());
+                let err = maybe_struct.unwrap_err();
+                let msg = err.to_string();
+                assert!(msg.contains("This level is not allowed for the log file."), "value={:?}, msg={:?}", expected, msg);
+            }
         }
     }
 
-    if is_v6 {
-        let igd_name = format!("{}", AlgorithmSpecification::InternetGatewayProtocol { timeout: serde_default_algo_timeout() });
-        if unique_algos.contains(igd_name.as_str()) {
-            return Err(anyhow!("algorithm '{igd_name}' cannot be used with IPv6"));
-        }
-    }    
+    #[test]
+    fn test_level_filter_empty() {
+        let maybe_struct = toml::from_str::<SerdeLevelFilter>("");
+        assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
+        let result = maybe_struct.unwrap();
+        assert!(result.level.is_none());
+    }
 
-    let none_name = format!("{}", AlgorithmSpecification::None);
-    if unique_algos.contains(none_name.as_str()) {
-        if algos.len() == 1 {
-            Ok(false)
-        }
-        else {
-            Err(anyhow!("algorithm '{none_name}' cannot be included with others"))
+
+    #[test]
+    fn test_validate_ttl() {
+        for (value, expect_ok) in [
+            (0, true),
+            (60, true),
+            (3600, true),
+            (i32::MAX, true),
+            (-1, false),
+            (i32::MIN, false),
+        ] {
+            let value_str = format!("{value}");
+
+            let r = parse_ranged_number::<FieldTTL>(value_str.as_str());
+            assert!(r.is_ok() == expect_ok, "value={value_str}, r={r:?}");
+            if let Ok(r) = r {
+                assert_eq!(r, value, "value={value}, r={r:?}");
+            }
+
+            let toml_str = format!("route53_record_ttl = {value}");
+            let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
+            if expect_ok {
+                assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
+                let struct_obj = maybe_struct.unwrap();
+                assert!(struct_obj.common.aws_route53_record_ttl.is_some(), "expect config option is populated");
+                let struct_value = struct_obj.common.aws_route53_record_ttl.unwrap();
+                assert_eq!(struct_value, value);
+            }
+            else {
+                assert!(maybe_struct.is_err(), "value={value}");
+            }
         }
     }
-    else {
-        Ok(algos.len() != 0)
+
+    #[test]
+    fn test_validate_update_timeout() {
+        for (value, expect_ok) in [
+            (MIN_UPDATE_TIMEOUT_SECONDS, true),
+            (MAX_UPDATE_TIMEOUT_SECONDS, true),
+            ((MIN_UPDATE_TIMEOUT_SECONDS + MAX_UPDATE_TIMEOUT_SECONDS) * 0.5, true),
+            (MIN_UPDATE_TIMEOUT_SECONDS - 1.0, false),
+            (MAX_UPDATE_TIMEOUT_SECONDS + 1.0, false),
+        ] {
+            let value_str = format!("{value}");
+
+            let r = parse_ranged_number::<FieldUpdateTimeout>(value_str.as_str());
+            if expect_ok {
+                assert!(r.is_ok(), "value={value}, err={:?}", r.unwrap_err());
+                let r = r.unwrap();
+                assert_eq!(r, value, "value={value}");
+            }
+            else {
+                assert!(r.is_err(), "value={value}");
+            }
+
+            let toml_str = format!("update_timeout_seconds = {value}");
+            let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
+            if expect_ok {
+                assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
+                let struct_obj = maybe_struct.unwrap();
+                assert!(struct_obj.common.update_timeout_seconds.is_some(), "expect config option is populated");
+                let struct_value = struct_obj.common.update_timeout_seconds.unwrap();
+                assert_eq!(struct_value, value);
+            }
+            else {
+                assert!(maybe_struct.is_err(), "value={value}");
+            }
+        }
+    }
+
+
+    #[test]
+    fn test_validate_update_poll_interval() {
+        for (value, expect_ok) in [
+            (MIN_UPDATE_POLL_SECONDS, true),
+            (MAX_UPDATE_POLL_SECONDS, true),
+            ((MIN_UPDATE_POLL_SECONDS + MAX_UPDATE_POLL_SECONDS) * 0.5, true),
+            (MIN_UPDATE_POLL_SECONDS - 1.0, false),
+            (MAX_UPDATE_POLL_SECONDS + 1.0, false),
+        ] {
+            let value_str = format!("{value}");
+
+            let r = parse_ranged_number::<FieldUpdatePollInterval>(value_str.as_str());
+            if expect_ok {
+                assert!(r.is_ok(), "value={value}, err={:?}", r.unwrap_err());
+                let r = r.unwrap();
+                assert_eq!(r, value, "value={value}");
+            }
+            else {
+                assert!(r.is_err(), "value={value}");
+            }
+
+            let toml_str = format!("update_poll_seconds = {value}");
+            let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
+            if expect_ok {
+                assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
+                let struct_obj = maybe_struct.unwrap();
+                assert!(struct_obj.common.update_poll_seconds.is_some(), "expect config option is populated");
+                let struct_value = struct_obj.common.update_poll_seconds.unwrap();
+                assert_eq!(struct_value, value);
+            }
+            else {
+                assert!(maybe_struct.is_err(), "value={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_idna_host_name() {
+        let tests = [
+            ("localhost", true),
+            ("www.google.com", true),
+            ("domain.", true),
+            ("xn--jxalpdlp.test", true),
+
+            (".", false),
+            ("-example", false),
+            ("example-", false),
+            ("example.-test", false),
+            ("example.-test.", false),
+            ("example.test-", false),
+            ("example.test-.", false),
+            ("*.wildcard.domain", false),
+            ("*.wildcard.domain.", false),
+            ("wildcard.*.domain", false),
+            ("123456789012345678901234567890123456789012345678901234567890123", true),
+            ("1234567890123456789012345678901234567890123456789012345678901234", false)
+        ];
+        for (host_name, expect_valid) in tests {
+            let result = validate_idna_host_name(host_name);
+            if expect_valid {
+                assert!(result.is_ok(), "err: {:?}", result.unwrap_err());
+            }
+            else {
+                assert!(result.is_err(), "host_name: {:?}", host_name);
+                let err = result.unwrap_err();
+                let msg = err.to_string();
+                assert!(msg.starts_with("invalid host_name: "), "e: {:?}", msg.as_str());
+            }
+        }
+    }
+
+
+    #[test]
+    fn test_normalize_host_name() {
+        let tests = [
+            ("example.com", "example.com."),
+            ("EXAMPLE.COM", "example.com."),
+            ("España.Example.Com", "xn--espaa-rta.example.com.")
+        ];
+
+        for (host_name, expected_normlization) in tests {
+            let result = normalize_host_name(host_name).unwrap();
+            assert_eq!(result, expected_normlization, "{:?}", host_name);
+        }
     }
 }

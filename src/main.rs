@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: [MIT] OR [Apache-2.0]
 
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
@@ -20,7 +21,8 @@ use crate::aws_route53::{
     UpdateHostResult, get_resource_records, get_zone_id, update_host_addresses_if_different
 };
 use crate::config::Config;
-use crate::ip_algorithms::{get_ipv4_addresses, get_ipv6_addresses};
+use crate::ip_algorithms::AlgorithmSpecification;
+
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -39,7 +41,7 @@ async fn main() {
         }
     }
     debug!("Using config file: {:?}", &config.config_file_path);
-    trace!("Configuration: {}", serde_json::to_string(&config).unwrap());
+    trace!("Configuration:\n{}", toml_edit::ser::to_string(&config).unwrap());
 
     let arc_config = Rc::new(config);
 
@@ -49,7 +51,8 @@ async fn main() {
         let arc_config = arc_config.clone();
         local_set.spawn_local(async move {
             let time = Instant::now();
-            let r = get_ipv4_addresses(arc_config.as_ref()).await;
+            let algos: &[AlgorithmSpecification] = arc_config.ipv4_algorithms.as_ref();
+            let r = AlgorithmSpecification::get_public_ip_address_for_algos::<Ipv4Addr>(algos).await;
             trace!("Local IPv4 address determination took {:.2} seconds", time.elapsed().as_secs_f32());
             r
         })
@@ -58,7 +61,8 @@ async fn main() {
         let arc_config = arc_config.clone();
         local_set.spawn_local(async move { 
             let time = Instant::now();
-            let r = get_ipv6_addresses(arc_config.as_ref()).await;
+            let algos: &[AlgorithmSpecification] = arc_config.ipv6_algorithms.as_ref();
+            let r = AlgorithmSpecification::get_public_ip_address_for_algos::<Ipv6Addr>(algos).await;
             trace!("Local IPv6 address determination took {:.2} seconds", time.elapsed().as_secs_f32());
             r
         })
@@ -70,7 +74,7 @@ async fn main() {
         let config_builder = aws_sdk_route53::config::Builder::from(&sdk_config);
         let config = config_builder.build();
         let r53 = aws_sdk_route53::Client::from_conf(config);
-        trace!("SDK configuraiton loading {:.2} seconds", time.elapsed().as_secs_f32());
+        trace!("SDK configuration loading {:.2} seconds", time.elapsed().as_secs_f32());
         r53
     };
     let rc_r53 = Rc::new(r53);
@@ -78,15 +82,22 @@ async fn main() {
     let zone_id = match arc_config.route53_zone_id.as_ref() {
         Some(zid) => zid.clone(),
         None => {
+            // Need to search for the zone to use
             let arc_config = arc_config.clone();
             let rc_r53 = rc_r53.clone();
             match local_set
                 .spawn_local(async move {
-                    get_zone_id(rc_r53.as_ref(), arc_config.host_name_normalized.as_str()).await
+                    let time: Instant = Instant::now();
+                    let zone_id = get_zone_id(
+                        rc_r53.as_ref(),
+                        arc_config.host_name_normalized.as_str()
+                    ).await;
+                    trace!("SDK configuration loading {:.2} seconds", time.elapsed().as_secs_f32());
+                    zone_id
                 })
                 .await
                 .expect("future-join should not panic") {
-                    Ok(r) => r,
+                    Ok(zone_id) => zone_id,
                     Err(e) => {
                         error!("{:#}", e);
                         return;
@@ -102,14 +113,15 @@ async fn main() {
         local_set.spawn_local(async move {
             let config = arc_config.as_ref();
             let r53_ref = rc_r53.as_ref();
-            let r = get_resource_records(
+            let time: Instant = Instant::now();
+            let rrs = get_resource_records(
                 r53_ref,
                 &config.host_name_normalized,
                 zone_id.as_ref()
             )
             .await;
-            trace!("Route53 address query took {:.2} seconds", start_time.elapsed().as_secs_f32());
-            r
+            trace!("Route53 address query took {:.2} seconds", time.elapsed().as_secs_f32());
+            rrs
         })
     };
 

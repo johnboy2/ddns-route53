@@ -129,22 +129,25 @@ Various other configuration options exist; see [`example/ddns-route53.conf`](exa
  1. Provide the path to the file explicitly, or
  1. Rely on the utility locating the configuration file automatically.
 
-To provide the path explicitly, invoke the command with the `-c` argument followed by teh path. For example:
+To provide the path explicitly, invoke the command with the `-c` argument followed by the path. For example:
 ```
 ddns-route53 -c /path/to/config/file
 ```
 
-If an explicit path is not given, the utility will search in the following locations:
+If an explicit path is not given, the utility will automatically use the first file to be found in one of the following locations:
  1. `ddns-route53.conf` (i.e., a file in the current working directory)
  1. If running on a Posix system:
     1. `~/.config/ddns-route53.conf`
+    1. `~/.local/share/ddns-route53.conf`
     1. `~/.ddns-route53.conf`
     1. `/usr/local/etc/ddns-route53.conf`
     1. `/etc/opt/ddns-route53.conf`
     1. `/etc/ddns-route53.conf`
  1. If running on a Windows system:
-    1. `%USERPROFILE%\ddns-route53.conf`
+    1. `%LOCALAPPDATA%\ddns-route53.conf`
     1. `%ProgramData%\ddns-route53.conf`
+
+Alternatively, you can also explicitly specify _no_ configuration file by passing `-c -`. (This forces use of CLI options only.)
 
 ### Runtime behavior
 

@@ -324,13 +324,14 @@ mod tests {
     use super::*;
 
     static TEST_CONFIG: LazyLock<Config> = LazyLock::new(|| {
-        Config::build_test_config(
-            "example.com",
-            Duration::from_secs(1),
-            Duration::from_secs(100),
-            false,
-            60
-        )
+        Config {
+            host_name: "example.com".into(),
+            update_poll_interval: Duration::from_secs(1),
+            update_timeout: Duration::from_secs(100),
+            no_update: true,
+            route53_record_ttl: 60,
+            ..Default::default()
+        }
     });
 
     #[test]
