@@ -478,28 +478,21 @@ impl AlgorithmSpecification {
     }
 }
 
-// impl Debug for AlgorithmSpecification {
-//     // For debugging purposes, we want a concise description of each algorithm with all the details.
-//     // Serializing to (compact) TOML gives us that.
-//     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-//         let as_value = toml::Value::try_from(self).map_err(|_e| std::fmt::Error)?;
-//         let as_string = as_value.to_string();
-//         //f.write_str(as_string.as_str())
-//         f.write_str("q")
-        
-        
-//         // toml::to_string(&self)
-//         //     .map_err(|e| {
-//         //         error!(
-//         //             "Failed to serialize AlgorithmSpecification: {}",
-//         //             e.to_string()
-//         //         );
-//         //         std::fmt::Error
-//         //     })
-//         //     .and_then(|s| f.write_str(s.as_str()))
-//     }
-// }
-
+impl Debug for AlgorithmSpecification {
+    // For debugging purposes, we want a concise description of each algorithm with all the details.
+    // Serializing to (compact) TOML gives us that.
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        toml::to_string(&self)
+            .map_err(|e| {
+                error!(
+                    "Failed to serialize AlgorithmSpecification: {}",
+                    e.to_string()
+                );
+                std::fmt::Error
+            })
+            .and_then(|s| f.write_str(s.as_str()))
+    }
+}
 
 
 impl Display for AlgorithmSpecification {

@@ -191,20 +191,22 @@ pub mod posix {
 
 #[cfg(windows)]
 pub mod windows {
-    use std::ffi::OsString;
+    use std::ffi::{c_void, OsString};
+    use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
+    use std::ptr::null_mut;
+
+    use anyhow::anyhow;
     use windows_sys::core::{GUID, PWSTR};
     use windows_sys::Win32::Foundation::{LocalFree, E_INVALIDARG, HLOCAL, S_OK};
-    use windows_sys::Win32::Globalization::{GetACP, MultiByteToWideChar};
     use windows_sys::Win32::System::Com::CoTaskMemFree;
-    use windows_sys::Win32::System::Diagnostics::Debug::{
-        FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
-        FORMAT_MESSAGE_IGNORE_INSERTS,
-    };
     use windows_sys::Win32::System::SystemServices::{LANG_NEUTRAL, SUBLANG_DEFAULT};
     use windows_sys::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_LocalAppData, FOLDERID_ProgramData};
 
+    #[cfg(feature = "native-decode")]
     pub fn convert_code_page_slice_to_string(code_page: u32, input: &[u8]) -> anyhow::Result<String> {
+        use windows_sys::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
+
         if code_page == 65001 {
             // Fast path for UTF-8, which is the most common code-page and doesn't require any transcoding.
             return String::from_utf8(input.to_vec()).map_err(|e| anyhow!("UTF-8 decoding error: {e}"));
@@ -219,14 +221,16 @@ pub mod windows {
         };
 
         let mut buf = Vec::<u16>::with_capacity(input.len());
-        let hr: i32 = MultiByteToWideChar(
-            code_page,
-            flags,
-            input.as_ptr() as *const i8,
-            input.len() as i32,
-            buf.as_mut_ptr(),
-            buf.capacity() as i32
-        );
+        let hr: i32 = unsafe {
+            MultiByteToWideChar(
+                code_page,
+                flags,
+                input.as_ptr() as *const u8,
+                input.len() as i32,
+                buf.as_mut_ptr(),
+                buf.capacity() as i32
+            )
+        };
         if hr == 0 {
             let error_code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
             return Err(anyhow!(
@@ -235,7 +239,7 @@ pub mod windows {
             ));
         }
 
-        let converted = String::from_utf16(buf.as_slice()[0..(rc as usize)])
+        let converted = String::from_utf16(&buf.as_slice()[0..(hr as usize)])
             .map_err(|e| anyhow!("UTF-16 decoding error: {e}"));
         converted
     }
@@ -243,7 +247,7 @@ pub mod windows {
     #[inline]
     #[cfg(feature = "native-decode")]
     pub fn get_active_code_page() -> u32 {
-        unsafe { GetACP() }
+        unsafe { windows_sys::Win32::Globalization::GetACP() }
     }
 
     #[inline]
@@ -256,36 +260,40 @@ pub mod windows {
     }
 
     #[inline]
-    pub fn wcstr_to_slice(ptr: *const u16) -> &[u16] {
+    pub unsafe fn wcstr_to_slice<'a>(ptr: *const u16) -> &'a [u16] {
         let ptr_len = wcstr_len(ptr);
         std::slice::from_raw_parts(ptr, ptr_len)
     }
 
 
     #[inline]
-    fn make_lang_id(primaryId: u32, sublangId: u32) -> u32 {
-        (sublangId << 10) | primaryId
+    fn make_lang_id(primary_id: u32, sublang_id: u32) -> u32 {
+        (sublang_id << 10) | primary_id
     }
 
 
-    pub fn convert_hresult_to_error_message_string(hr: HRESULT) -> String {
-        let result: String;
+    pub fn convert_hresult_to_error_message_string(message_id: u32) -> String {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        };            
 
+        let result: String;
         unsafe {
             let mut buffer: *mut u16 = null_mut();
-            
+
             let length = FormatMessageW(
                 FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                 null_mut(),
-                hr,
+                message_id,
                 make_lang_id(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                &mut buffer, // Cast to PWSTR/LPTSTR
+                &mut buffer as *mut *mut u16 as *mut u16, // Cast to PWSTR/LPTSTR
                 0,
                 null_mut()
             );
 
-            if length == 0 {
-                result = format!("Error code: {hr:08X}");
+            if length == 0 || buffer.is_null() {
+                result = format!("Error code: {message_id:08X}");
             }
             else {
                 let slice = std::slice::from_raw_parts(buffer, length as usize);
@@ -316,11 +324,11 @@ pub mod windows {
 
     pub fn get_known_folder(guid: GUID) -> anyhow::Result<Option<PathBuf>> {
         let mut ptr: PWSTR = std::ptr::null_mut();
-        let hr = SHGetKnownFolderPath(guid, 0, null, &ptr);
+        let hr = unsafe { SHGetKnownFolderPath(&guid, 0, null_mut(), &mut ptr) };
 
-        let result: anyhow::Result<PathBuf>;
+        let result: anyhow::Result<Option<PathBuf>>;
         if hr == S_OK {
-            let result_slice = wcstr_to_slice(ptr);
+            let result_slice = unsafe { wcstr_to_slice(ptr) };
             let result_os = OsString::from_wide(result_slice);
             result = Ok(Some(PathBuf::from(result_os)));
         }
@@ -328,11 +336,11 @@ pub mod windows {
             result = Ok(None);  // No such known-folder on *this* system.
         }
         else {
-            result = Err(anyhow!("{}", convert_hresult_to_error_message_string(hr)));
+            result = Err(anyhow!("{}", convert_hresult_to_error_message_string(hr as u32)));
         }
 
         if ptr != std::ptr::null_mut() {
-            CoTaskMemFree(ptr as *const c_void);
+            unsafe { CoTaskMemFree(ptr as *const c_void) };
         }
 
         result
@@ -341,22 +349,25 @@ pub mod windows {
 
     #[cfg(test)]
     mod tests {
-        use core::slice;
         use std::env::var_os;
         use super::*;
 
+        #[repr(align(2))]
+        struct AlignedSlice<T>(T);
+
         #[test]
         fn test_wcstr_len() {
+
             for (slice, expected_len) in [
-                (b"".as_slice(), 0),
-                (b"\xFF\xFF\x00\x00".as_slice(), 1),
-                (b"\x00\xFF\x00\x00".as_slice(), 1),
-                (b"\xFF\x00\x00\x00".as_slice(), 1),
-                (b"\xFF\xFF\xFF\xFF\x00".as_slice(), 2),
-                (b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00".as_slice(), 13),
-                (b"\x01\x01\x00\x00\xFF\xFF".as_slice(), 1)  // Extra content should be ignored!
+                (AlignedSlice(*b"\x00\x00").0.as_slice(), 0),
+                (AlignedSlice(*b"\xFF\xFF\x00\x00").0.as_slice(), 1),
+                (AlignedSlice(*b"\x00\xFF\x00\x00").0.as_slice(), 1),
+                (AlignedSlice(*b"\xFF\x00\x00\x00").0.as_slice(), 1),
+                (AlignedSlice(*b"\xFF\xFF\xFF\xFF\x00\x00").0.as_slice(), 2),
+                (AlignedSlice(*b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00").0.as_slice(), 13),
+                (AlignedSlice(*b"\x01\x01\x00\x00\xFF\xFF").0.as_slice(), 1)  // Extra content should be ignored!
             ] {
-                let actual_size = wcstr_len(slice.as_ptr() as *const u16);
+                let actual_size = unsafe { wcstr_len(slice.as_ptr() as *const u16) };
                 assert_eq!(actual_size, expected_len, "input={:?}", slice);
             }
         }
@@ -364,19 +375,19 @@ pub mod windows {
         #[test]
         fn test_wcstr_to_slice() {
             for (slice, expected) in [
-                (b"".as_slice(), Vec::<u16>::new()),
-                (b"\x00\x00".as_slice(), Vec::<u16>::new()),  // Extra null bytes
-                (b"\xFF\xFF\x00\x00".as_slice(), vec!(0xFFFFu16)),
-                (b"\x00\xFF\x00\x00".as_slice(), vec!(0xFF00u16)),
-                (b"\xFF\x00\x00\x00".as_slice(), vec!(0x00FFu16)),
-                (b"\xFF\xFF\xFF\xFF\x00\x00".as_slice(), vec!(0xFFFFu16, 0xFFFFu16)),
+                (AlignedSlice(*b"\x00\x00").0.as_slice(), Vec::<u16>::new()),
+                (AlignedSlice(*b"\x00\x00\x00\x00").0.as_slice(), Vec::<u16>::new()),  // Extra null bytes
+                (AlignedSlice(*b"\xFF\xFF\x00\x00").0.as_slice(), vec!(0xFFFFu16)),
+                (AlignedSlice(*b"\x00\xFF\x00\x00").0.as_slice(), vec!(0xFF00u16)),
+                (AlignedSlice(*b"\xFF\x00\x00\x00").0.as_slice(), vec!(0x00FFu16)),
+                (AlignedSlice(*b"\xFF\xFF\xFF\xFF\x00\x00").0.as_slice(), vec!(0xFFFFu16, 0xFFFFu16)),
                 (
-                    b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00".as_slice(),
+                    AlignedSlice(*b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00").0.as_slice(),
                     vec!(0x48u16, 0x65u16, 0x6Cu16, 0x6Cu16, 0x6Fu16, 0x2Cu16, 0x20u16, 0x57u16, 0x6Fu16, 0x72u16, 0x6Cu16, 0x64u16, 0x21u16)
                 )
             ] {
                 let ptr = slice.as_ptr() as *const u16;
-                let result_wcstr: &[u16] = wcstr_to_slice(ptr);
+                let result_wcstr: &[u16] = unsafe { wcstr_to_slice(ptr) };
                 assert_eq!(result_wcstr, expected.as_slice(), "input={:?}", slice);
             }
         }
@@ -399,7 +410,7 @@ pub mod windows {
             let maybe_program_data = get_program_data_folder();
             assert!(maybe_program_data.is_ok(), "err={:?}", maybe_program_data.unwrap_err());
 
-            let program_data = program_data.unwrap();
+            let program_data = maybe_program_data.unwrap();
             let env_program_data = var_os("ProgramData").map(|oss| PathBuf::from(oss));
             assert_eq!(program_data, env_program_data);
         }

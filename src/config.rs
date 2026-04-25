@@ -210,7 +210,7 @@ impl NumericFieldParameters for FieldUpdatePollInterval {
 }
 
 
-#[derive(Args, Default, Deserialize)]
+#[derive(Args, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct CommonOptions {
     /// The fully-qualified domain name of the host to update. (This must be specified in either a configuration file
@@ -226,6 +226,7 @@ struct CommonOptions {
     /// The TTL use when updating the applicable Route53 resource record(s). Defaults to 3600 unless overridden by a
     /// configuration file
     #[arg(short='t', long, value_name = "N", value_parser = parse_ranged_number::<FieldTTL>)]
+    #[serde(deserialize_with = "deser_ranged_number::<_, FieldTTL>")]
     pub aws_route53_record_ttl: Option<i32>,
 
     /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 300 unless
@@ -313,7 +314,7 @@ struct CliOptions {
 }
 
 
-#[derive(Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct FileOptions {
     #[serde(flatten)]
@@ -437,9 +438,6 @@ impl Config {
         result.host_name_normalized = normalize_host_name(result.host_name.as_str())?.to_string();
 
         result.route53_record_ttl = *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
-        if result.route53_record_ttl < 0 {
-            return Err(anyhow!("route53_record_ttl cannot be negative: {0}", result.route53_record_ttl));
-        }
 
         result.update_timeout = Duration::from_secs_f64(
             *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS)            
@@ -871,7 +869,7 @@ mod tests {
                 assert_eq!(r, value, "value={value}, r={r:?}");
             }
 
-            let toml_str = format!("route53_record_ttl = {value}");
+            let toml_str = format!("aws_route53_record_ttl = {value}");
             let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
             if expect_ok {
                 assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
