@@ -444,7 +444,7 @@ impl Config {
         );
 
         result.update_poll_interval = Duration::from_secs_f64(
-            *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
+            *take_first_defined!(update_poll_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
         );
 
         result.no_update = cli_args.no_update;
