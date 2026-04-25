@@ -607,7 +607,11 @@ fn create_file_log_dispatcher(
         })
         .level_for(env!("CARGO_CRATE_NAME"), *level)
         .level(*level_other)
-        .chain(fern::log_file(file_path)?))
+        .chain(
+            fern::log_file(file_path)
+            .context(format!("Failed to open log file: {}", file_path.to_string_lossy()))?
+        )
+    )
 }
 
 fn find_configuration_file(
