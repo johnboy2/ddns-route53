@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{DecoderResult, Encoding, UTF_8, WINDOWS_1252};
+use encoding_rs::{DecoderResult, Encoding, WINDOWS_1252};
 use igd_next::{search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
@@ -803,7 +803,9 @@ fn decode_bytes_with_encoding_fallback(
     configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
     const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
-    let fallback_encoding = UTF_8;
+
+    #[cfg(not(all(windows, feature = "native-decode")))]
+    let fallback_encoding = encoding_rs::UTF_8;
 
     if data.is_empty() {
         Ok(String::new())

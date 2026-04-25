@@ -233,7 +233,7 @@ pub mod windows {
             _ => MB_ERR_INVALID_CHARS,
         };
 
-        let mut buf = Vec::<u16>::with_capacity(input.len());
+        let mut buf = vec![0u16; input.len()];
         let hr: i32 = unsafe {
             MultiByteToWideChar(
                 code_page,
@@ -440,7 +440,7 @@ pub mod windows {
             let data = b"Test data";
 
             let maybe_result = convert_code_page_slice_to_string(0, data.as_slice());
-            assert!(maybe_result.is_err());
+            assert!(maybe_result.is_ok());
 
             for code_page in [
                 1252,  // Western European (Windows Latin1)
