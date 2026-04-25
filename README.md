@@ -8,7 +8,7 @@
 
 ## Installing the easy way
 
-1. Install the rust compiler, using either your distribution's sources or by following https://www.rust-lang.org/tools/install
+1. Install the rust compiler, using either your distribution's sources or by following https://www.rust-lang.org/tools/install.
 1. Run this command:
    ```
    cargo install ddns-route53
@@ -19,7 +19,7 @@
 
 If you want to build and install it manually, follow these steps instead:
 
-1. Install the rust compiler, using either your distribution's sources or by following https://www.rust-lang.org/tools/install
+1. Install the rust compiler, using either your distribution's sources or by following https://www.rust-lang.org/tools/install.
 1. Download the `ddns-route53` source from GitHub, or check it out using git:
    ```
    git clone https://github.com/johnboy2/ddns-route53.git
@@ -30,6 +30,26 @@ If you want to build and install it manually, follow these steps instead:
    ```
 1. Wait for it to download dependencies and compile the tool (this can take a few minutes).
 1. Once done, you'll find the utility at `target/release/ddns-route53`.
+
+## Optional build features:
+
+### native-decode
+
+The `native-decode` feature changes the decoding behavior of any `plugin` IP address algorithms you have configured. 
+
+By default (i.e., _without_ this feature), any plugin output decoding is done as follows:
+
+1. If the algorithm provides an `encoding` option, that will be used to decode the plugin's output.
+2. If the output begins with a byte-order mark for any of UTF-8, UTF-16LE, or UTF-16BE, the output will be decoded using the indicated encoding.
+3. If the first two bytes can be decoded as a valid UTF-16 code unit, and if the resulting code-point is in the range U+0000-U+00FF, then the plugin's output will be decoded with UTF-16 using the system's native byte-order.
+4. Finally, if all else fails, UTF-8 will be used.
+
+With this feature installed, however, the fourth step instead becomes:
+
+4. Depending on your operating system:
+    - On Unix (including Linux and MacOS), the `LC_ALL`, `LC_CTYPE`, and `LANG` environment variables are read, in that order, for the first to specify a codeset component. (For a list of available codesets on your system, you can often use the `iconv -l` command.) If a supported codeset is found, that will be used to decode the plugin output using the native iconv library. If no codeset is found, decoding falls back on UTF-8.
+    - On Windows, the active code page (i.e., the output from running the `chcp` command from a terminal window) will be used to decode the plugin output using Windows' native API. There is no fallback from this case, since Windows systems _always_ have an active code page.
+    - For all other systems, UTF-8 remains the fallback decoder (i.e., just as if this feature wasn't installed).
 
 ## AWS configuration
 
@@ -48,7 +68,7 @@ The following example shows one way to create an IAM user with limited permissio
  1. Create an IAM user that can update the zone:
     1. Log into the [IAM console](https://console.aws.amazon.com/iam/home) as a user with sufficient administrative rights.
     1. In the Dashboard, find "Access Management" and click on "Policies".
-    1. Click "Create policy"
+    1. Click "Create policy".
     1. Under the Policy editor, click on "JSON", and replace the default content with the following:
         ```json
         {
@@ -84,29 +104,28 @@ The following example shows one way to create an IAM user with limited permissio
 
         > Replace `home.example.com` in the IAM policy above with the fully-qualified domain name of the record you want maintained.
 
-        > The `"Resource"` entries above must be updated to give the "ARN" of your zone, which is comprised of `"arn:aws:route53:::hostedzone/"` followed by your zone ID. If your Zone ID is `Z12345` (for example), then its ARN is `"arn:aws:route53:::hostedzone/Z12345"` — so that's what you should put under the first two `"Resource"` sections of the IAM policy above.
-    1. Click "Next"
-    1. Set a suitable policy name; e.g. `DynamicDNS-home.example.com`
-    1. Scroll down to the bottom and click "Create Policy"
-    
+        > The first two `"Resource"` entries above must be updated to give the "ARN" of your zone, which is comprised of the prefix, `"arn:aws:route53:::hostedzone/"`, followed by your zone ID. For example, if your Zone ID is `Z12345`, then its ARN is `"arn:aws:route53:::hostedzone/Z12345"` — so that's what you should put under the first two `"Resource"` sections of the IAM policy above.
+    1. Click "Next".
+    1. Set a suitable policy name; e.g. `DynamicDNS-home.example.com`.
+    1. Scroll down to the bottom and click "Create Policy".
     1. In the Dashboard, find "Access Management" and click on "Users".
-    1. Click on "Create user"
-    1. Enter a suitable name into the "User name" field; for example `ddns-user`. Then click "Next"
+    1. Click on "Create user".
+    1. Enter a suitable name into the "User name" field; for example `ddns-user`. Then click "Next".
         > Other options on this page can be skipped.
-    1. On the "Set Permissions" page under "Permissions options", select "Attach policies directly"
-    1. Under "Permissions policies", enter the policy name you chose above; that will filter the list of available policies to just those containing the name you gave; find your policy, and place a checkmark in the box next to its name
-    1. Click "Next"
-    1. Click "Create user"
+    1. On the "Set Permissions" page under "Permissions options", select "Attach policies directly".
+    1. Under "Permissions policies", enter the policy name you chose above; that will filter the list of available policies to just those containing the name you gave; find your policy, and place a checkmark in the box next to its name.
+    1. Click "Next".
+    1. Click "Create user".
  1. Create an access key for your IAM user:
     1. Log into the [IAM console](https://console.aws.amazon.com/iam/home) as a user with sufficient administrative rights.
     1. In the Dashboard, find "Access Management" and click on "Users".
-    1. Click on the user you created
-    1. Click on the "Security credentials" tab
-    1. Under "Access keys", click on "Create access key"
-    1. Under use case, select "Other", and click "Next"
+    1. Click on the user you created.
+    1. Click on the "Security credentials" tab.
+    1. Under "Access keys", click on "Create access key".
+    1. Under use case, select "Other", and click "Next".
     1. (Optionally) Set a description, such as `DDNS update key`.
-    1. Click "Create access key"
-    1. Make note of the "Access key" and the "Secret access key", or use the "Download .csv file" button — you'll need these to setup the client configuration (below)
+    1. Click "Create access key".
+    1. Make note of the "Access key" and the "Secret access key", or use the "Download .csv file" button — you'll need these to setup the client configuration (below).
        > Always keep your AWS IAM credentials confidential!
 
 ## Client configuration
@@ -125,7 +144,7 @@ Various other configuration options exist; see [`example/ddns-route53.conf`](exa
 
 ### Configuration file path
 
-`ddns-route53` needs to know where its configuraiton file is located in order to run. You can do this via either of two ways:
+`ddns-route53` is usually setup with a configuration file -- so it needs to know where it is located in order to run. You can do this via either of two ways:
  1. Provide the path to the file explicitly, or
  1. Rely on the utility locating the configuration file automatically.
 
@@ -136,7 +155,7 @@ ddns-route53 -c /path/to/config/file
 
 If an explicit path is not given, the utility will automatically use the first file to be found in one of the following locations:
  1. `ddns-route53.conf` (i.e., a file in the current working directory)
- 1. If running on a Posix system:
+ 1. If running on a Posix system (e.g., Linux, Mac, or other Unix):
     1. `~/.config/ddns-route53.conf`
     1. `~/.local/share/ddns-route53.conf`
     1. `~/.ddns-route53.conf`
@@ -151,9 +170,9 @@ Alternatively, you can also explicitly specify _no_ configuration file by passin
 
 ### Runtime behavior
 
-This tool is a simple, "fire and forget" utility. That is, it checks your current IP address _right now_ and updates Route53 if it differs. It **does not** recheck later.
+This tool is a simple, "fire and forget" utility. That is, it checks your current IP address _right now_ and updates the Route53 record if it differs. It **does not** recheck later.
 
-If you want to run it periodically, you can use a third-party scheduler to do so. For example, the Windows Task Scheduler, Mac iCal, Mac launchd, and Unix/Linux cron jobs, and Linux systemd can all be configured to run `ddns-route53` periodically.
+If you want to run it periodically, you can use a third-party scheduler to do so. For example, the Windows Task Scheduler, Mac iCal, Mac launchd, Unix/Linux cron jobs, and Linux systemd can all be configured to run `ddns-route53` periodically.
 
 See the `example` folder in the source distribution for available scheduling examples.
 
