@@ -661,15 +661,13 @@ fn find_configuration_file(
 
     #[cfg(windows)]
     {
-        for path in [
+        for candidate_dir in [
             crate::os_helpers::windows::get_user_local_app_data_folder()?, // E.g., "C:\Users\John.Doe\AppData\Local"
             crate::os_helpers::windows::get_program_data_folder()?,        // E.g., "C:\ProgramData"
-        ] {
-            if let Some(candidate_dir) = path {
-                let candidate = candidate_dir.join("ddns-route53.conf");
-                if candidate.is_file() {
-                    return Ok(Some(Cow::Owned(candidate)));
-                }
+        ].into_iter().flatten() {
+            let candidate = candidate_dir.join("ddns-route53.conf");
+            if candidate.is_file() {
+                return Ok(Some(Cow::Owned(candidate)));
             }
         }
     }

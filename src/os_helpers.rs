@@ -238,7 +238,7 @@ pub mod windows {
             MultiByteToWideChar(
                 code_page,
                 flags,
-                input.as_ptr() as *const u8,
+                input.as_ptr(),
                 input.len() as i32,
                 buf.as_mut_ptr(),
                 buf.capacity() as i32,
@@ -349,7 +349,7 @@ pub mod windows {
             ));
         }
 
-        if ptr != std::ptr::null_mut() {
+        if !ptr.is_null() {
             unsafe { CoTaskMemFree(ptr as *const c_void) };
         }
 
