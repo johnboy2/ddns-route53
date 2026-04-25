@@ -41,6 +41,7 @@ pub mod posix {
         // Find the index of the first period
         if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
             // Find the encoding (which may be terminated by an '@' modifier)
+            let start_offset = start_offset + 1;
             let codeset_name = if let Some(length) = os_value_bytes[start_offset..]
                 .iter()
                 .position(|b| *b == b'@')
@@ -50,14 +51,14 @@ pub mod posix {
                 &os_value_bytes[start_offset..]
             };
 
-            if codeset_name.len() == 0 {
+            if codeset_name.is_empty() {
                 return None;
             } else {
                 return Some(String::from_utf8_lossy(codeset_name));
             }
         }
 
-        return None;
+        None
     }
 
     #[cfg(feature = "native-decode")]
@@ -96,7 +97,7 @@ pub mod posix {
 
         let result: anyhow::Result<Option<PathBuf>>;
         if rc == 0 {
-            if getpwuid_result == null_mut() {
+            if getpwuid_result.is_null() {
                 result = Ok(None);
             } else {
                 let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
@@ -166,25 +167,23 @@ pub mod posix {
             let data = "Test data";
             let data_utf8 = data.as_bytes();
 
-            for code_set in ["UTF-8".as_slice(), "WINDOWS-1252".as_slice()] {
-                let maybe_result =
-                    convert_code_page_slice_to_string(code_page, data_utf8.as_slice());
+            for code_set in ["UTF-8", "WINDOWS-1252"] {
+                let maybe_result = convert_code_set_slice_to_string(code_set, data_utf8);
                 assert!(
                     maybe_result.is_ok(),
-                    "code_page={code_page} err={:?}",
+                    "code_set={code_set} err={:?}",
                     maybe_result.unwrap_err()
                 );
                 let result = maybe_result.unwrap();
-                assert_eq!(result, data, "code_page={code_page}");
+                assert_eq!(result, data, "code_set={code_set}");
             }
 
             let data_utf16be: Vec<u8> = data.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
             let data_utf16le: Vec<u8> = data.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-            for (code_set, data_encoded) in [
-                ("UTF-16BE".as_slice(), data_utf16be.as_slice()),
-                ("UTF-16lE".as_slice(), data_utf16le.as_slice()),
-            ] {
-                let maybe_result = convert_code_set_slice_to_string(code_set, data_encoded);
+            for (code_set, data_encoded) in [("UTF-16BE", data_utf16be), ("UTF-16lE", data_utf16le)]
+            {
+                let maybe_result =
+                    convert_code_set_slice_to_string(code_set, data_encoded.as_slice());
                 assert!(
                     maybe_result.is_ok(),
                     "codeset={code_set} err={:?}",

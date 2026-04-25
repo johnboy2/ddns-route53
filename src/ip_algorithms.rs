@@ -86,7 +86,7 @@ mod serde_encoding {
             };
 
             Encoding::for_label(sb)
-                .map(|e| Some(e))
+                .map(Some)
                 .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
         } else {
             Ok(None)
@@ -118,9 +118,7 @@ mod serde_url {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Url::parse(&s).map_err(|e| {
-            D::Error::custom(format!("could not parse url: \"{s}\": {}", e.to_string()))
-        })
+        Url::parse(&s).map_err(|e| D::Error::custom(format!("could not parse url: \"{s}\": {}", e)))
     }
 
     pub fn serialize<S>(url: &Url, serializer: S) -> Result<S::Ok, S::Error>
@@ -249,7 +247,7 @@ impl IpAddressV4orV6 for Ipv6Addr {
                 || matches!(self.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
                 // ORCHIDv2 (`2001:20::/28`)
                 // Drone Remote ID Protocol Entity Tags (DETs) Prefix (`2001:30::/28`)`
-                || matches!(self.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)
+                || matches!(self.segments(), [0x2001, b, _, _, _, _, _, _] if (0x20..=0x3F).contains(&b))
             ))
         // 6to4 (`2002::/16`) – it's not explicitly documented as globally reachable,
         // IANA says N/A.
@@ -466,7 +464,7 @@ impl AlgorithmSpecification {
             };
         }
 
-        if algos.len() != 0 {
+        if !algos.is_empty() {
             warn!("{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
         }
 
@@ -493,10 +491,7 @@ impl Debug for AlgorithmSpecification {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         toml::to_string(&self)
             .map_err(|e| {
-                error!(
-                    "Failed to serialize AlgorithmSpecification: {}",
-                    e.to_string()
-                );
+                error!("Failed to serialize AlgorithmSpecification: {e}");
                 std::fmt::Error
             })
             .and_then(|s| f.write_str(s.as_str()))
@@ -724,7 +719,7 @@ fn build_command_object(plugin_command: &StringOrStringVec) -> anyhow::Result<Co
 
     match plugin_command {
         StringOrStringVec::String(s) => {
-            if s.len() == 0 {
+            if s.is_empty() {
                 return Err(anyhow!("command cannot be empty"));
             }
             #[cfg(windows)]
@@ -752,7 +747,7 @@ fn build_command_object(plugin_command: &StringOrStringVec) -> anyhow::Result<Co
             }
         }
         StringOrStringVec::Vec(v) => {
-            if v.len() == 0 || v[0].len() == 0 {
+            if v.is_empty() || v[0].is_empty() {
                 return Err(anyhow!("command cannot be empty"));
             }
             command_obj = Command::new(&v[0]);
@@ -781,26 +776,24 @@ fn decode_bytes_with_encoding(data: &[u8], encoding: &'static Encoding) -> anyho
         decoder.decode_to_string_without_replacement(data, &mut string_buffer, true);
 
     match decode_result {
-        DecoderResult::InputEmpty => {
-            return Ok(string_buffer);
-        }
+        DecoderResult::InputEmpty => Ok(string_buffer),
         DecoderResult::OutputFull => {
             // Since we preallocate a worst-case string, this *should* be impossible.
             error!("plugin output could not be decoded: output buffer was too small");
-            return Err(anyhow!(
+            Err(anyhow!(
                 "failed to decode plugin output with encoding \"{}\": output buffer was too small",
                 encoding.name()
-            ));
+            ))
         }
         DecoderResult::Malformed(sequence_len, sequence_len_consumed) => {
             error!(
                 "plugin output could not be decoded: malformed sequence at byte index {} ({} bytes long, {} bytes consumed)",
                 num_bytes_consumed, sequence_len, sequence_len_consumed
             );
-            return Err(anyhow!(
+            Err(anyhow!(
                 "failed to decode plugin output with encoding \"{}\": bad input error",
                 encoding.name()
-            ));
+            ))
         }
     }
 }
@@ -812,7 +805,7 @@ fn decode_bytes_with_encoding_fallback(
     const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
     let fallback_encoding = UTF_8;
 
-    if data.len() == 0 {
+    if data.is_empty() {
         Ok(String::new())
     } else if let Some(encoding) = configuration_encoding {
         debug!(
@@ -845,16 +838,16 @@ fn decode_bytes_with_encoding_fallback(
             {
                 debug!("No encoding could be detected from plugin output; trying current code set instead");
                 if let Some(active_code_set) = crate::os_helpers::posix::get_active_code_set() {
-                    return crate::os_helpers::convert_code_set_slice_to_string(
+                    crate::os_helpers::posix::convert_code_set_slice_to_string(
                         active_code_set.as_str(),
                         data,
-                    )?;
+                    )
                 } else {
                     debug!(
                         "No code set found; trying fallback {0} instead",
                         fallback_encoding.name()
                     );
-                    return decode_bytes_with_encoding(data, fallback_encoding)?;
+                    decode_bytes_with_encoding(data, fallback_encoding)
                 }
             }
 
@@ -862,16 +855,16 @@ fn decode_bytes_with_encoding_fallback(
             {
                 debug!("No encoding could be detected from plugin output; trying active code page instead");
                 let active_code_page = crate::os_helpers::windows::get_active_code_page();
-                return crate::os_helpers::windows::convert_code_page_slice_to_string(
+                crate::os_helpers::windows::convert_code_page_slice_to_string(
                     active_code_page,
                     data,
-                )?;
+                )
             }
 
             #[cfg(not(any(unix, windows)))]
             {
                 debug!("No encoding could be detected from plugin output, and no native encoding detection available on this platform; trying fallback {0} instead", fallback_encoding.name());
-                return decode_bytes_with_encoding(data, fallback_encoding);
+                decode_bytes_with_encoding(data, fallback_encoding)
             }
         }
 
@@ -946,9 +939,9 @@ async fn get_plugin_output(
         decode_bytes_with_encoding_fallback(stdout_binary.as_slice(), configuration_encoding)?;
     trace!("plugin output: {:?}", stdout_decoded.as_str());
     if succeeded {
-        return Ok(stdout_decoded);
+        Ok(stdout_decoded)
     } else {
-        return Err(anyhow!("plugin failed"));
+        Err(anyhow!("plugin failed"))
     }
 }
 

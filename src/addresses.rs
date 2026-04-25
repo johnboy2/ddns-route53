@@ -21,20 +21,20 @@ pub struct Route53AddressRecords {
 impl From<&Route53AddressRecords> for Addresses {
     fn from(item: &Route53AddressRecords) -> Self {
         let mut ipv4addr_set = HashSet::<Ipv4Addr>::new();
-        item.v4.as_ref().map(|rrs| {
+        if let Some(rrs) = item.v4.as_ref() {
             for rr in rrs.resource_records() {
                 ipv4addr_set
                     .insert(Ipv4Addr::from_str(rr.value.as_str()).expect("valid IPv4 address"));
             }
-        });
+        }
 
         let mut ipv6addr_set = HashSet::<Ipv6Addr>::new();
-        item.v6.as_ref().map(|rrs| {
+        if let Some(rrs) = item.v6.as_ref() {
             for rr in rrs.resource_records() {
                 ipv6addr_set
                     .insert(Ipv6Addr::from_str(rr.value.as_str()).expect("valid IPv6 address"));
             }
-        });
+        }
 
         Addresses {
             v4: ipv4addr_set,

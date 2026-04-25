@@ -128,7 +128,7 @@ where
 {
     if let Some(value) = Option::<String>::deserialize(deserializer)?.as_ref() {
         parse_nonempty_string::<FieldParams>(value.as_str())
-            .map(|r| Some(r))
+            .map(Some)
             .map_err(|e| D::Error::custom(e.to_string()))
     } else {
         Ok(None)
@@ -175,13 +175,13 @@ where
         }
     }
 
-    return Err(anyhow!(
+    Err(anyhow!(
         "value for {0} must be {1} in the range {2}-{3}",
         FieldParams::name(),
         FieldParams::type_name_singular(),
         FieldParams::min(),
         FieldParams::max()
-    ));
+    ))
 }
 
 // This function ensures very large numbers are treated the same as any other "out-of-range" value, rather than
@@ -404,13 +404,14 @@ impl Config {
         };
         let console_log_dispatcher = create_console_log_dispatcher(&cli_args);
 
-        match find_configuration_file(cli_args.config_path.map(|pb| Cow::Owned(pb))) {
+        match find_configuration_file(cli_args.config_path.map(Cow::Owned)) {
             Ok(maybe_file_path) => {
                 if let Some(file_path) = maybe_file_path {
-                    match load_config_file(&file_path) {
+                    let file_path_buf = file_path.to_path_buf();
+                    match load_config_file(file_path) {
                         Ok(config) => {
                             maybe_file_config = Some(config);
-                            result.config_file_path = Some(file_path.to_path_buf());
+                            result.config_file_path = Some(file_path_buf);
                         }
                         Err(e) => {
                             // Ensure at least the console-log is setup before returning the error
@@ -502,11 +503,8 @@ impl Config {
 
         if let Some(ip_algos) = take_first_defined!(ipv4_algorithms) {
             // Only take them if it isn't JUST the 'None' algorithm
-            let has_none_only = ip_algos.len() == 1
-                && match ip_algos[0] {
-                    AlgorithmSpecification::None => true,
-                    _ => false,
-                };
+            let has_none_only =
+                ip_algos.len() == 1 && matches!(ip_algos[0], AlgorithmSpecification::None);
             if !has_none_only {
                 AlgorithmSpecification::validate_combination(ip_algos.as_slice(), false)?;
                 result.ipv4_algorithms = ip_algos.clone();
@@ -515,11 +513,8 @@ impl Config {
 
         if let Some(ip_algos) = take_first_defined!(ipv6_algorithms) {
             // Only take them if it isn't JUST the 'None' algorithm
-            let has_none_only = ip_algos.len() == 1
-                && match ip_algos[0] {
-                    AlgorithmSpecification::None => true,
-                    _ => false,
-                };
+            let has_none_only =
+                ip_algos.len() == 1 && matches!(ip_algos[0], AlgorithmSpecification::None);
             if !has_none_only {
                 AlgorithmSpecification::validate_combination(ip_algos.as_slice(), true)?;
                 result.ipv6_algorithms = ip_algos.clone();
@@ -562,7 +557,7 @@ impl Config {
             }
         }
 
-        Ok((result, aws_config_loader.into()))
+        Ok((result, aws_config_loader))
     }
 }
 
@@ -698,7 +693,7 @@ fn get_char_representation(ch: char) -> Cow<'static, str> {
     }
 }
 
-fn load_config_file<'a>(path: &Cow<'a, Path>) -> anyhow::Result<FileOptions> {
+fn load_config_file<'a>(path: Cow<'a, Path>) -> anyhow::Result<FileOptions> {
     let fh = File::open(path.as_ref()).context("I/O error opening config file")?;
     let mut reader = BufReader::new(fh);
     let file_size = reader
@@ -771,72 +766,70 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
         );
     }
 
+    let mut itr = name.chars().enumerate();
+    let mut label_len: u32;
+    let mut label_num = 0u32;
+    let mut last_ch: char;
+    let mut last_ch_idx: usize;
+
     loop {
-        let mut itr = name.chars().enumerate();
-        let mut label_len: u32;
-        let mut label_num = 0u32;
-        let mut last_ch: char;
-        let mut last_ch_idx: usize;
+        label_num += 1;
+        label_len = 0;
 
-        loop {
-            label_num += 1;
-            label_len = 0;
-
-            // Get the first/leading character of the current label
-            if let Some((idx, ch)) = itr.next() {
-                match ch {
-                    'a'..='z' | 'A'..='Z' | '0'..='9' => {}
-                    _ => {
-                        return Err(anyhow!(
-                            "invalid host_name: character at offset {0} must be one of a-z, A-Z, or 0-9 (got: {1})",
-                            idx, get_char_representation(ch)
-                        ));
-                    }
+        // Get the first/leading character of the current label
+        if let Some((idx, ch)) = itr.next() {
+            match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' => {}
+                _ => {
+                    return Err(anyhow!(
+                        "invalid host_name: character at offset {0} must be one of a-z, A-Z, or 0-9 (got: {1})",
+                        idx, get_char_representation(ch)
+                    ));
                 }
-                last_ch = ch;
-                last_ch_idx = idx;
-                label_len += 1;
-            } else {
-                // Since we know the host-name wasn't completely empty (since we checked at the very top), having
-                // nothing (end of string) after a dot (separator) means it was a final, trailing dot. That is OK.
-                return Ok(());
             }
+            last_ch = ch;
+            last_ch_idx = idx;
+            label_len += 1;
+        } else {
+            // Since we know the host-name wasn't completely empty (since we checked at the very top), having
+            // nothing (end of string) after a dot (separator) means it was a final, trailing dot. That is OK.
+            return Ok(());
+        }
 
-            let mut got_label_terminator = false;
-            while let Some((idx, ch)) = itr.next() {
-                match ch {
-                    'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {}
-                    '.' => {
-                        last_ch_idx = idx - 1;
-                        got_label_terminator = true;
-                        break;
-                    }
-                    _ => {
-                        return Err(anyhow!(
-                            "invalid host_name: character at offset {0} must be one of a-z, A-Z, 0-9, -, or . (got: {1})",
-                            idx, get_char_representation(ch)
-                        ));
-                    }
+        let mut got_label_terminator = false;
+        for (idx, ch) in itr.by_ref() {
+            match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {}
+                '.' => {
+                    last_ch_idx = idx - 1;
+                    got_label_terminator = true;
+                    break;
                 }
-                last_ch = ch;
-                last_ch_idx = idx;
-                label_len += 1;
+                _ => {
+                    return Err(anyhow!(
+                        "invalid host_name: character at offset {0} must be one of a-z, A-Z, 0-9, -, or . (got: {1})",
+                        idx, get_char_representation(ch)
+                    ));
+                }
             }
+            last_ch = ch;
+            last_ch_idx = idx;
+            label_len += 1;
+        }
 
-            if MAX_DNS_LABEL_LENGTH <= label_len {
-                return Err(anyhow!(
-                    "invalid host_name: label {label_num} is too long (length {label_len} exceeds maximum of {MAX_DNS_LABEL_LENGTH})"
-                ));
-            }
-            if last_ch == '-' {
-                return Err(anyhow!(
-                    "invalid host_name: character at offset {last_ch_idx} ('-'): hyphens are not allowed as the final character in a label"
-                ));
-            }
+        if MAX_DNS_LABEL_LENGTH <= label_len {
+            return Err(anyhow!(
+                "invalid host_name: label {label_num} is too long (length {label_len} exceeds maximum of {MAX_DNS_LABEL_LENGTH})"
+            ));
+        }
+        if last_ch == '-' {
+            return Err(anyhow!(
+                "invalid host_name: character at offset {last_ch_idx} ('-'): hyphens are not allowed as the final character in a label"
+            ));
+        }
 
-            if !got_label_terminator {
-                return Ok(());
-            }
+        if !got_label_terminator {
+            return Ok(());
         }
     }
 }

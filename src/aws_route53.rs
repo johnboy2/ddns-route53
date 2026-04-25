@@ -309,7 +309,7 @@ pub async fn update_host_addresses_if_different(
             .expect("Change-lookups should return change-info")
     }
 
-    return Ok(UpdateHostResult::UpdateSuccessful);
+    Ok(UpdateHostResult::UpdateSuccessful)
 }
 
 #[cfg(test)]
