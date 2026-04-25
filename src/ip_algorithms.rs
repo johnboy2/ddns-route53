@@ -35,9 +35,9 @@ const DEFAULT_ALGO_TIMEOUT_SECS: u64 = 10;
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
 const MAX_PLUGIN_DOCUMENT_LENGTH: u64 = 65535;
 
-
-fn serde_default_algo_timeout() -> Duration { Duration::from_secs(DEFAULT_ALGO_TIMEOUT_SECS) }
-
+fn serde_default_algo_timeout() -> Duration {
+    Duration::from_secs(DEFAULT_ALGO_TIMEOUT_SECS)
+}
 
 mod serde_duration_f64 {
     use serde::de::Error;
@@ -82,26 +82,27 @@ mod serde_encoding {
                 b"utf16" => b"utf-16",
                 b"utf16le" | b"utf-16-le" => b"utf-16le",
                 b"utf16be" | b"utf-16-be" => b"utf-16be",
-                _ => sb
+                _ => sb,
             };
 
             Encoding::for_label(sb)
-            .map(|e| Some(e))
-            .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
-        }
-        else {
+                .map(|e| Some(e))
+                .ok_or(D::Error::custom(format!("unknown encoding: \"{s}\"")))
+        } else {
             Ok(None)
         }
     }
 
-    pub fn serialize<S>(encoding: &Option<&'static Encoding>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(
+        encoding: &Option<&'static Encoding>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         if let Some(e) = encoding {
             serializer.serialize_str(e.name())
-        }
-        else {
+        } else {
             serializer.serialize_none()
         }
     }
@@ -129,7 +130,6 @@ mod serde_url {
         serializer.serialize_str(url.as_str())
     }
 }
-
 
 pub trait IpAddressV4orV6: Copy + Debug + Display + Eq + FromStr + Hash + Send {
     fn is_global(&self) -> bool;
@@ -168,7 +168,9 @@ impl IpAddressV4orV6 for Ipv4Addr {
         || self.is_broadcast())
     }
 
-    fn type_name() -> &'static str { "IPv4" }
+    fn type_name() -> &'static str {
+        "IPv4"
+    }
 
     async fn get_default_public_ip() -> anyhow::Result<Vec<Self>> {
         let default_interface = (*DEFAULT_INTERFACE)
@@ -200,7 +202,8 @@ impl IpAddressV4orV6 for Ipv4Addr {
                 timeout: Some(timeout),
                 ..Default::default()
             };
-            let gateway = search_gateway(search_option).context("error finding internet gateway")?;
+            let gateway =
+                search_gateway(search_option).context("error finding internet gateway")?;
 
             let ip = gateway
                 .get_external_ip()
@@ -267,8 +270,10 @@ impl IpAddressV4orV6 for Ipv6Addr {
         ))
     }
 
-    fn type_name() -> &'static str { "IPv6" }
-    
+    fn type_name() -> &'static str {
+        "IPv6"
+    }
+
     async fn get_default_public_ip() -> anyhow::Result<Vec<Self>> {
         let default_interface = (*DEFAULT_INTERFACE)
             .as_ref()
@@ -291,10 +296,11 @@ impl IpAddressV4orV6 for Ipv6Addr {
     }
 
     async fn get_igd_public_ip(_timeout: &Duration) -> anyhow::Result<Vec<Self>> {
-        Err(anyhow!("internet_gateway_protocol algorithm cannot be used with IPv6"))
+        Err(anyhow!(
+            "internet_gateway_protocol algorithm cannot be used with IPv6"
+        ))
     }
 }
-
 
 // This helper ensures AlgorithmSpecification objects are serialized as inline tables (similar to JSON objects),
 // rather (INI-style) tables. This is intended for readability of trace output.
@@ -311,7 +317,6 @@ impl IpAddressV4orV6 for Ipv6Addr {
 //     value.serialize(ser).map_err(S::Error::custom)?;
 //     serializer.serialize_str(buffer.as_str())
 // }
-
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
@@ -345,7 +350,7 @@ pub enum AlgorithmSpecification {
         timeout: Duration,
 
         #[serde(default, with = "serde_encoding")]
-        default_encoding: Option<&'static Encoding>
+        default_encoding: Option<&'static Encoding>,
     },
 
     #[serde(rename = "plugin")]
@@ -360,7 +365,7 @@ pub enum AlgorithmSpecification {
         timeout: Duration,
 
         #[serde(default, with = "serde_encoding")]
-        encoding: Option<&'static Encoding>
+        encoding: Option<&'static Encoding>,
     },
 }
 
@@ -372,13 +377,18 @@ impl AlgorithmSpecification {
         format!("{self}")
     }
 
-    pub fn validate_combination(algos: &[AlgorithmSpecification], for_ipv6: bool) -> anyhow::Result<()> {
+    pub fn validate_combination(
+        algos: &[AlgorithmSpecification],
+        for_ipv6: bool,
+    ) -> anyhow::Result<()> {
         let mut unique_algo_names = HashSet::<String>::new();
         for algo in algos {
             let algo_name = algo.get_name();
-            
+
             if unique_algo_names.contains(algo_name.as_str()) {
-                return Err(anyhow!("algorithm '{algo_name}' cannot be specified more than once"));
+                return Err(anyhow!(
+                    "algorithm '{algo_name}' cannot be specified more than once"
+                ));
             }
 
             match algo {
@@ -388,12 +398,12 @@ impl AlgorithmSpecification {
                             "algorithm '{algo_name}' must be alone in any given IP version's algorithms -- it cannot be combined with any others"
                         ));
                     }
-                },
+                }
                 AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
                     if for_ipv6 {
                         return Err(anyhow!("algorithm '{algo_name}' cannot be used with IPv6"));
                     }
-                },
+                }
                 _ => {}
             }
 
@@ -411,19 +421,21 @@ impl AlgorithmSpecification {
         match self {
             AlgorithmSpecification::None => {
                 panic!("Unreachable code was somehow reached")
-            },
-            AlgorithmSpecification::DefaultPublicIp => {
-                T::get_default_public_ip().await
             }
+            AlgorithmSpecification::DefaultPublicIp => T::get_default_public_ip().await,
             AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
                 T::get_igd_public_ip(timeout).await
             }
-            AlgorithmSpecification::WebService { url, timeout, default_encoding } => {
-                get_web_service_ip::<T>(url, timeout, *default_encoding).await
-            }
-            AlgorithmSpecification::Plugin { command, timeout, encoding } => {
-                get_plugin_ip::<T>(command, timeout, *encoding).await
-            }
+            AlgorithmSpecification::WebService {
+                url,
+                timeout,
+                default_encoding,
+            } => get_web_service_ip::<T>(url, timeout, *default_encoding).await,
+            AlgorithmSpecification::Plugin {
+                command,
+                timeout,
+                encoding,
+            } => get_plugin_ip::<T>(command, timeout, *encoding).await,
         }
     }
 
@@ -440,10 +452,7 @@ impl AlgorithmSpecification {
             let algo_result = algo.get_public_ip_address::<T>().await;
             match algo_result {
                 Ok(ips) => {
-                    debug!(
-                        "{ip_version}_algorithms[{idx}]: got addresses: {:?}",
-                        &ips
-                    );
+                    debug!("{ip_version}_algorithms[{idx}]: got addresses: {:?}", &ips);
                     if ips.is_empty() {
                         debug!("{ip_version}_algorithms[{idx}]: skipping empty result");
                     } else {
@@ -473,7 +482,7 @@ impl AlgorithmSpecification {
     pub fn supports_ipv6(&self) -> bool {
         match self {
             AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => false,
-            _ => true
+            _ => true,
         }
     }
 }
@@ -494,37 +503,33 @@ impl Debug for AlgorithmSpecification {
     }
 }
 
-
 impl Display for AlgorithmSpecification {
     // For display purposes, we want a *simple* description of each algorithm, without unnecessary details.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Self::None => f.write_str("none"),
             Self::DefaultPublicIp => f.write_str("default_public_ip"),
-            Self::InternetGatewayProtocol {
-                timeout: _
-            } => write!(f, "internet_gateway_protocol"),
+            Self::InternetGatewayProtocol { timeout: _ } => write!(f, "internet_gateway_protocol"),
             Self::WebService {
                 url,
                 timeout: _,
-                default_encoding: _
+                default_encoding: _,
             } => write!(f, "web_service:\"{}\"", url.as_str()),
             Self::Plugin {
                 command,
                 timeout: _,
-                encoding: _
-            } => write!(f, "plugin:\"{command}\"")
+                encoding: _,
+            } => write!(f, "plugin:\"{command}\""),
         }
     }
 }
-
 
 // Helper to download a document from a URL
 async fn get_web_service_document(
     client: &Client,
     url: &Url,
     timeout: &Duration,
-    default_encoding: Option<&'static Encoding>
+    default_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
     let request = client.get(url.clone()).timeout(*timeout).send();
     let response = request.await.context("error fetching url")?;
@@ -562,15 +567,20 @@ async fn get_web_service_document(
     let encoding = if let Some(name) = encoding_name {
         match Encoding::for_label(name.as_bytes()) {
             Some(e) => e,
-            None => { return Err(anyhow!("unknown encoding: \"{name}\""))?; }
+            None => {
+                return Err(anyhow!("unknown encoding: \"{name}\""))?;
+            }
         }
     } else {
         debug!("No Content-Type header found, or did not contain a charset");
         match default_encoding {
             Some(e) => {
-                debug!("Using configuration-provided default_encoding: {}", e.name());
+                debug!(
+                    "Using configuration-provided default_encoding: {}",
+                    e.name()
+                );
                 e
-            },
+            }
             None => {
                 debug!("Using HTTP default encoding: iso-8859-1");
                 WINDOWS_1252
@@ -603,13 +613,23 @@ async fn get_web_service_document(
     {
         Some(decoded) => Ok(decoded),
         None => {
-            error!("web-service response could not be decoded; value: {:X?}", body_binary.as_slice());
-            Err(anyhow!("failed to decode output with \"{}\"", encoding.name()))
+            error!(
+                "web-service response could not be decoded; value: {:X?}",
+                body_binary.as_slice()
+            );
+            Err(anyhow!(
+                "failed to decode output with \"{}\"",
+                encoding.name()
+            ))
         }
     }
 }
 
-pub async fn get_web_service_ip<T>(url: &Url, timeout: &Duration, default_encoding: Option<&'static Encoding>) -> anyhow::Result<Vec<T>>
+pub async fn get_web_service_ip<T>(
+    url: &Url,
+    timeout: &Duration,
+    default_encoding: Option<&'static Encoding>,
+) -> anyhow::Result<Vec<T>>
 where
     T: IpAddressV4orV6,
     <T as FromStr>::Err: ToString,
@@ -662,13 +682,12 @@ impl Display for StringOrStringVec {
             StringOrStringVec::String(s) => {
                 if s.len() <= MAX_STR_LEN {
                     f.write_str(s.as_str())?;
-                }
-                else {
+                } else {
                     let substr: String = s.chars().take(MAX_STR_LEN - 1).collect();
                     f.write_str(substr.as_str())?;
                     f.write_str("…")?;
                 }
-            },
+            }
             StringOrStringVec::Vec(v) => {
                 if !v.is_empty() {
                     if v[0].len() <= MAX_STR_LEN {
@@ -694,12 +713,11 @@ impl From<&str> for StringOrStringVec {
     }
 }
 
-impl From<Vec::<&str>> for StringOrStringVec {
-    fn from(v: Vec::<&str>) -> Self {
+impl From<Vec<&str>> for StringOrStringVec {
+    fn from(v: Vec<&str>) -> Self {
         StringOrStringVec::Vec(v.iter().map(|s| (*s).to_string()).collect())
     }
 }
-
 
 fn build_command_object(plugin_command: &StringOrStringVec) -> anyhow::Result<Command> {
     let mut command_obj: Command;
@@ -751,78 +769,91 @@ fn build_command_object(plugin_command: &StringOrStringVec) -> anyhow::Result<Co
     Ok(command_obj)
 }
 
-fn decode_bytes_with_encoding(
-    data: &[u8],
-    encoding: &'static Encoding
-) -> anyhow::Result<String> {
+fn decode_bytes_with_encoding(data: &[u8], encoding: &'static Encoding) -> anyhow::Result<String> {
     let mut decoder = encoding.new_decoder_without_bom_handling();
-    
+
     let mut string_buffer = String::with_capacity(
         decoder.max_utf8_buffer_length_without_replacement(data.len())
         .expect("buffer size calculation overflowed"))  // Should be impossible (MAX_PLUGIN_DOCUMENT_LENGTH)
     ;
 
     let (decode_result, num_bytes_consumed) =
-        decoder.decode_to_string_without_replacement(data, &mut string_buffer, true)
-    ;
-    
+        decoder.decode_to_string_without_replacement(data, &mut string_buffer, true);
+
     match decode_result {
         DecoderResult::InputEmpty => {
             return Ok(string_buffer);
-        },
+        }
         DecoderResult::OutputFull => {
             // Since we preallocate a worst-case string, this *should* be impossible.
             error!("plugin output could not be decoded: output buffer was too small");
-            return Err(anyhow!("failed to decode plugin output with encoding \"{}\": output buffer was too small", encoding.name()));
-        },
+            return Err(anyhow!(
+                "failed to decode plugin output with encoding \"{}\": output buffer was too small",
+                encoding.name()
+            ));
+        }
         DecoderResult::Malformed(sequence_len, sequence_len_consumed) => {
             error!(
                 "plugin output could not be decoded: malformed sequence at byte index {} ({} bytes long, {} bytes consumed)",
                 num_bytes_consumed, sequence_len, sequence_len_consumed
             );
-            return Err(anyhow!("failed to decode plugin output with encoding \"{}\": bad input error", encoding.name()));
+            return Err(anyhow!(
+                "failed to decode plugin output with encoding \"{}\": bad input error",
+                encoding.name()
+            ));
         }
     }
 }
 
-fn decode_bytes_with_encoding_fallback(data: &[u8], configuration_encoding: Option<&'static Encoding>) -> anyhow::Result<String> {
-    const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") {1} else {0};
+fn decode_bytes_with_encoding_fallback(
+    data: &[u8],
+    configuration_encoding: Option<&'static Encoding>,
+) -> anyhow::Result<String> {
+    const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
     let fallback_encoding = UTF_8;
 
     if data.len() == 0 {
         Ok(String::new())
-    }
-    else if let Some(encoding) = configuration_encoding {
-        debug!("Using configuration-specified encoding: {}", encoding.name());
+    } else if let Some(encoding) = configuration_encoding {
+        debug!(
+            "Using configuration-specified encoding: {}",
+            encoding.name()
+        );
         decode_bytes_with_encoding(data, encoding)
-    }
-    else if let Some((encoding, bom_len_bytes)) = Encoding::for_bom(data) {
-        debug!("Found byte-order mark at start of plugin output; using encoding: {}", encoding.name());
+    } else if let Some((encoding, bom_len_bytes)) = Encoding::for_bom(data) {
+        debug!(
+            "Found byte-order mark at start of plugin output; using encoding: {}",
+            encoding.name()
+        );
         decode_bytes_with_encoding(&data[bom_len_bytes..], encoding)
-    }
-    else if HIGH_BYTE_IDX < data.len() && data[HIGH_BYTE_IDX] == 0 {
+    } else if HIGH_BYTE_IDX < data.len() && data[HIGH_BYTE_IDX] == 0 {
         if cfg!(target_endian = "little") {
-            debug!("Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16LE");
+            debug!(
+                "Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16LE"
+            );
             decode_bytes_with_encoding(data, encoding_rs::UTF_16LE)
-        }
-        else {
-            debug!("Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16BE");
+        } else {
+            debug!(
+                "Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16BE"
+            );
             decode_bytes_with_encoding(data, encoding_rs::UTF_16BE)
         }
-    }
-    else {
-        #[cfg(feature = "native-decode")]      
+    } else {
+        #[cfg(feature = "native-decode")]
         {
             #[cfg(unix)]
             {
                 debug!("No encoding could be detected from plugin output; trying current code set instead");
                 if let Some(active_code_set) = crate::os_helpers::posix::get_active_code_set() {
                     return crate::os_helpers::convert_code_set_slice_to_string(
-                        active_code_set.as_str(), data
+                        active_code_set.as_str(),
+                        data,
                     )?;
-                }
-                else {
-                    debug!("No code set found; trying fallback {0} instead", fallback_encoding.name());
+                } else {
+                    debug!(
+                        "No code set found; trying fallback {0} instead",
+                        fallback_encoding.name()
+                    );
                     return decode_bytes_with_encoding(data, fallback_encoding)?;
                 }
             }
@@ -832,7 +863,8 @@ fn decode_bytes_with_encoding_fallback(data: &[u8], configuration_encoding: Opti
                 debug!("No encoding could be detected from plugin output; trying active code page instead");
                 let active_code_page = crate::os_helpers::windows::get_active_code_page();
                 return crate::os_helpers::windows::convert_code_page_slice_to_string(
-                    active_code_page, data
+                    active_code_page,
+                    data,
                 )?;
             }
 
@@ -845,7 +877,10 @@ fn decode_bytes_with_encoding_fallback(data: &[u8], configuration_encoding: Opti
 
         #[cfg(not(feature = "native-decode"))]
         {
-            debug!("No encoding could be detected from plugin output; trying fallback {0} instead", fallback_encoding.name());
+            debug!(
+                "No encoding could be detected from plugin output; trying fallback {0} instead",
+                fallback_encoding.name()
+            );
             decode_bytes_with_encoding(data, fallback_encoding)
         }
     }
@@ -854,7 +889,7 @@ fn decode_bytes_with_encoding_fallback(data: &[u8], configuration_encoding: Opti
 async fn get_plugin_output(
     command: &StringOrStringVec,
     timeout: &Duration,
-    configuration_encoding: Option<&'static Encoding>
+    configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
     let mut command_obj = build_command_object(command)?;
 
@@ -864,10 +899,15 @@ async fn get_plugin_output(
     let stdout = child.stdout.take().expect("failed to unwrap stdout pipe");
     let read_stdout_fut = tokio::spawn(async move {
         let mut buff = Vec::new();
-        let _ = stdout.take(MAX_PLUGIN_DOCUMENT_LENGTH).read_to_end(&mut buff).await;
+        let _ = stdout
+            .take(MAX_PLUGIN_DOCUMENT_LENGTH)
+            .read_to_end(&mut buff)
+            .await;
 
         if buff.len() == (MAX_PLUGIN_DOCUMENT_LENGTH as usize) {
-            return Err(anyhow!("plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"));
+            return Err(anyhow!(
+                "plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"
+            ));
         }
 
         Ok(buff)
@@ -902,12 +942,12 @@ async fn get_plugin_output(
         .await
         .expect("failed to unwrap stdout buffer content")?;
 
-    let stdout_decoded = decode_bytes_with_encoding_fallback(stdout_binary.as_slice(), configuration_encoding)?;
+    let stdout_decoded =
+        decode_bytes_with_encoding_fallback(stdout_binary.as_slice(), configuration_encoding)?;
     trace!("plugin output: {:?}", stdout_decoded.as_str());
     if succeeded {
         return Ok(stdout_decoded);
-    }
-    else {
+    } else {
         return Err(anyhow!("plugin failed"));
     }
 }
@@ -915,7 +955,7 @@ async fn get_plugin_output(
 pub async fn get_plugin_ip<T>(
     command: &StringOrStringVec,
     timeout: &Duration,
-    encoding: Option<&'static Encoding>
+    encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<Vec<T>>
 where
     T: IpAddressV4orV6,
@@ -945,27 +985,27 @@ where
     Ok(result)
 }
 
-
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
     use super::*;
+    use std::time::Duration;
 
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeDuration {
         #[serde(with = "serde_duration_f64")]
-        timeout: Duration
+        timeout: Duration,
     }
 
     #[test]
     fn test_serialize_duration_to_toml() {
-        let test_struct = SerdeDuration {timeout: Duration::from_secs_f64(1.5)};
+        let test_struct = SerdeDuration {
+            timeout: Duration::from_secs_f64(1.5),
+        };
         let maybe_toml = toml::to_string(&test_struct);
         assert!(maybe_toml.is_ok(), "err: {:?}", maybe_toml.unwrap_err());
         let toml_result = maybe_toml.unwrap();
         assert_eq!(toml_result.as_str().trim_end(), "timeout = 1.5");
     }
-
 
     #[test]
     fn test_parse_negative_duration_from_toml() {
@@ -977,16 +1017,17 @@ mod tests {
         assert!(msg.contains("value cannot be negative: "), "{:?}", msg);
     }
 
-
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeEncoding {
         #[serde(with = "serde_encoding")]
-        encoding: Option<&'static Encoding>
+        encoding: Option<&'static Encoding>,
     }
 
     #[test]
     fn test_serialize_encoding_utf8() {
-        let test_struct = SerdeEncoding { encoding: Some(encoding_rs::UTF_8) };
+        let test_struct = SerdeEncoding {
+            encoding: Some(encoding_rs::UTF_8),
+        };
         let toml_value = toml::to_string(&test_struct);
         assert!(toml_value.is_ok(), "err: {:?}", toml_value.unwrap_err());
         let value_string = toml_value.unwrap();
@@ -1008,19 +1049,34 @@ mod tests {
         let maybe_struct = toml::from_str::<SerdeEncoding>(toml_value);
         assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
         let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", toml_value);
+        assert_eq!(
+            result.encoding,
+            Some(encoding_rs::UTF_8),
+            "{:?}",
+            toml_value
+        );
 
         let toml_value: &str = "encoding = \"UTF-8\"";
         let maybe_struct = toml::from_str::<SerdeEncoding>(toml_value);
         assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
         let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", toml_value);
+        assert_eq!(
+            result.encoding,
+            Some(encoding_rs::UTF_8),
+            "{:?}",
+            toml_value
+        );
 
         let toml_value: &str = "encoding = \"utf8\"";
         let maybe_struct = toml::from_str::<SerdeEncoding>(toml_value);
         assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
         let result = maybe_struct.unwrap();
-        assert_eq!(result.encoding, Some(encoding_rs::UTF_8), "{:?}", toml_value);
+        assert_eq!(
+            result.encoding,
+            Some(encoding_rs::UTF_8),
+            "{:?}",
+            toml_value
+        );
     }
 
     // #[test]
@@ -1032,20 +1088,24 @@ mod tests {
     //     assert_eq!(result.encoding, None, "{:?}", toml_value);
     // }
 
-
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeUrl {
         #[serde(with = "serde_url")]
-        url: Url
+        url: Url,
     }
 
     #[test]
     fn test_serialize_url() {
-        let test_struct = SerdeUrl { url: Url::parse("https://www.google.com/").unwrap() };
+        let test_struct = SerdeUrl {
+            url: Url::parse("https://www.google.com/").unwrap(),
+        };
         let maybe_toml = toml::to_string(&test_struct);
         assert!(maybe_toml.is_ok(), "err: {:?}", maybe_toml.unwrap_err());
         let toml_value = maybe_toml.unwrap();
-        assert_eq!(toml_value.as_str().trim_end(), "url = \"https://www.google.com/\"");
+        assert_eq!(
+            toml_value.as_str().trim_end(),
+            "url = \"https://www.google.com/\""
+        );
     }
 
     #[test]
@@ -1054,9 +1114,13 @@ mod tests {
         let maybe_struct = toml::from_str::<SerdeUrl>(toml_value);
         assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
         let result = maybe_struct.unwrap();
-        assert_eq!(result.url, Url::parse("http://localhost/").unwrap(), "{:?}", toml_value);
+        assert_eq!(
+            result.url,
+            Url::parse("http://localhost/").unwrap(),
+            "{:?}",
+            toml_value
+        );
     }
-
 
     #[test]
     fn test_get_web_services_document() {
@@ -1064,12 +1128,9 @@ mod tests {
             .enable_io()
             .enable_time()
             .build()
-            .unwrap()
-        ;
-
-        let client = (*WEB_CLIENT)
-            .as_ref()
             .unwrap();
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
 
         // TODO: It would be better to use a mock web server here instead of an actual external service;
         // however, this is still better than nothing, and captive.apple.com is a reasonably stable endpoint
@@ -1079,17 +1140,17 @@ mod tests {
         let tests = [
             None,
             Some(encoding_rs::WINDOWS_1252),
-            Some(encoding_rs::UTF_8)
+            Some(encoding_rs::UTF_8),
         ];
         for encoding in tests {
-            let content = async_runtime.block_on(
-                get_web_service_document(
+            let content = async_runtime
+                .block_on(get_web_service_document(
                     client,
                     &Url::parse(url).unwrap(),
                     &Duration::from_secs(30),
-                    encoding
-                )
-            ).unwrap();
+                    encoding,
+                ))
+                .unwrap();
 
             assert_eq!(
                 content,
@@ -1104,16 +1165,15 @@ mod tests {
             .enable_io()
             .enable_time()
             .build()
-            .unwrap()
-        ;
+            .unwrap();
 
-        let content = async_runtime.block_on(
-            get_plugin_output(
+        let content = async_runtime
+            .block_on(get_plugin_output(
                 &StringOrStringVec::String("echo Hello!".to_string()),
                 &Duration::from_secs(10),
                 None,
-            )
-        ).unwrap();
+            ))
+            .unwrap();
 
         // Trim off trailing newline - regardless of specific format.
         let content_rstripped = content.trim_end_matches(&['\r', '\n'][..]);
@@ -1126,74 +1186,120 @@ mod tests {
         let vec = Vec::<AlgorithmSpecification>::new();
         for is_ipv6 in [false, true] {
             let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-            assert!(r.is_ok(), "ipVersion={}, err={:?}", if is_ipv6 {'6'} else {'4'}, r.unwrap_err());
+            assert!(
+                r.is_ok(),
+                "ipVersion={}, err={:?}",
+                if is_ipv6 { '6' } else { '4' },
+                r.unwrap_err()
+            );
         }
     }
 
-    static ALGO_DEFAULT_PUB_IP: LazyLock<AlgorithmSpecification> = LazyLock::new(|| {
-        AlgorithmSpecification::DefaultPublicIp {}
-    });
-    static ALGO_IGP: LazyLock<AlgorithmSpecification> = LazyLock::new(|| {
-        AlgorithmSpecification::InternetGatewayProtocol { timeout: Duration::from_secs(10) }
-    });
-    static ALGO_PLUGIN_SIMPLE: LazyLock<AlgorithmSpecification> = LazyLock::new(|| {
-        AlgorithmSpecification::Plugin {
+    static ALGO_DEFAULT_PUB_IP: LazyLock<AlgorithmSpecification> =
+        LazyLock::new(|| AlgorithmSpecification::DefaultPublicIp {});
+    static ALGO_IGP: LazyLock<AlgorithmSpecification> =
+        LazyLock::new(|| AlgorithmSpecification::InternetGatewayProtocol {
+            timeout: Duration::from_secs(10),
+        });
+    static ALGO_PLUGIN_SIMPLE: LazyLock<AlgorithmSpecification> =
+        LazyLock::new(|| AlgorithmSpecification::Plugin {
             command: StringOrStringVec::String("/bin/false".to_string()),
             timeout: Duration::from_secs(10),
-            encoding: None
-        }
-    });
-    static ALGO_WEB_SERVICE_SIMPLE: LazyLock<AlgorithmSpecification> = LazyLock::new(|| {
-        AlgorithmSpecification::WebService {
+            encoding: None,
+        });
+    static ALGO_WEB_SERVICE_SIMPLE: LazyLock<AlgorithmSpecification> =
+        LazyLock::new(|| AlgorithmSpecification::WebService {
             url: Url::parse("http://whatismyipaddress.com/").unwrap(),
             timeout: Duration::from_secs(10),
-            default_encoding: None
-        }
-    });
+            default_encoding: None,
+        });
 
     #[test]
     fn test_algorithm_standard_algos_okay_on_their_own() {
         for algo in [
-            &*ALGO_DEFAULT_PUB_IP, &*ALGO_PLUGIN_SIMPLE, &*ALGO_WEB_SERVICE_SIMPLE
+            &*ALGO_DEFAULT_PUB_IP,
+            &*ALGO_PLUGIN_SIMPLE,
+            &*ALGO_WEB_SERVICE_SIMPLE,
         ] {
-            let vec = vec!(algo.clone());
+            let vec = vec![algo.clone()];
             for is_ipv6 in [false, true] {
-                let supports_ip_version = if is_ipv6 { algo.supports_ipv6() } else { algo.supports_ipv4() };
+                let supports_ip_version = if is_ipv6 {
+                    algo.supports_ipv6()
+                } else {
+                    algo.supports_ipv4()
+                };
                 if supports_ip_version {
                     let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-                    assert!(r.is_ok(), "algo={}, ipVersion={}, err={:?}", algo, if is_ipv6 {'6'} else {'4'}, r.unwrap_err());
-                }
-                else {
+                    assert!(
+                        r.is_ok(),
+                        "algo={}, ipVersion={}, err={:?}",
+                        algo,
+                        if is_ipv6 { '6' } else { '4' },
+                        r.unwrap_err()
+                    );
+                } else {
                     let r = std::panic::catch_unwind(|| {
                         let _ = AlgorithmSpecification::validate_combination(vec.as_slice(), true);
                     });
-                    assert!(r.is_err(), "algo={}, ipVersion={}", algo, if is_ipv6 {'6'} else {'4'});
+                    assert!(
+                        r.is_err(),
+                        "algo={}, ipVersion={}",
+                        algo,
+                        if is_ipv6 { '6' } else { '4' }
+                    );
                 }
-            }            
+            }
         }
     }
 
     #[test]
     fn test_algorithm_combos_none_always_panics() {
-        let vec = vec!(AlgorithmSpecification::None);
+        let vec = vec![AlgorithmSpecification::None];
         for is_ipv6 in [false, true] {
             let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-            assert!(r.is_ok(), "none alone should be okay; ipVersion={0}", if is_ipv6 {'6'} else {'4'});
+            assert!(
+                r.is_ok(),
+                "none alone should be okay; ipVersion={0}",
+                if is_ipv6 { '6' } else { '4' }
+            );
         }
 
         for algo in [
-            &*ALGO_DEFAULT_PUB_IP, &*ALGO_IGP, &*ALGO_PLUGIN_SIMPLE, &*ALGO_WEB_SERVICE_SIMPLE
+            &*ALGO_DEFAULT_PUB_IP,
+            &*ALGO_IGP,
+            &*ALGO_PLUGIN_SIMPLE,
+            &*ALGO_WEB_SERVICE_SIMPLE,
         ] {
-            let vec_none_first = vec!(AlgorithmSpecification::None, algo.clone());
-            let vec_none_last = vec!(algo.clone(), AlgorithmSpecification::None);
+            let vec_none_first = vec![AlgorithmSpecification::None, algo.clone()];
+            let vec_none_last = vec![algo.clone(), AlgorithmSpecification::None];
             for is_ipv6 in [false, true] {
-                let supports_ip_version = if is_ipv6 { algo.supports_ipv6() } else { algo.supports_ipv4() };
+                let supports_ip_version = if is_ipv6 {
+                    algo.supports_ipv6()
+                } else {
+                    algo.supports_ipv4()
+                };
                 if supports_ip_version {
-                    let r = AlgorithmSpecification::validate_combination(vec_none_first.as_slice(), is_ipv6);
-                    assert!(r.is_err(), "None before valid item should not validate; algo={}, ipVersion={}", algo, if is_ipv6 {'6'} else {'4'});
+                    let r = AlgorithmSpecification::validate_combination(
+                        vec_none_first.as_slice(),
+                        is_ipv6,
+                    );
+                    assert!(
+                        r.is_err(),
+                        "None before valid item should not validate; algo={}, ipVersion={}",
+                        algo,
+                        if is_ipv6 { '6' } else { '4' }
+                    );
 
-                    let r = AlgorithmSpecification::validate_combination(vec_none_last.as_slice(), is_ipv6);
-                    assert!(r.is_err(), "None after valid item should not validate; algo={}, ipVersion={}", algo, if is_ipv6 {'6'} else {'4'});
+                    let r = AlgorithmSpecification::validate_combination(
+                        vec_none_last.as_slice(),
+                        is_ipv6,
+                    );
+                    assert!(
+                        r.is_err(),
+                        "None after valid item should not validate; algo={}, ipVersion={}",
+                        algo,
+                        if is_ipv6 { '6' } else { '4' }
+                    );
                 }
             }
         }
@@ -1204,82 +1310,106 @@ mod tests {
         let other = AlgorithmSpecification::WebService {
             url: Url::parse("http://example.com/").unwrap(),
             timeout: Duration::from_secs(1),
-            default_encoding: None
+            default_encoding: None,
         };
-        let vec = vec!(other, ALGO_WEB_SERVICE_SIMPLE.clone());
+        let vec = vec![other, ALGO_WEB_SERVICE_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
             let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-            assert!(r.is_ok(), "algos={:?}, ipVersion={}, err={:?}", vec, if is_ipv6 {'6'} else {'4'}, r.unwrap_err());            
+            assert!(
+                r.is_ok(),
+                "algos={:?}, ipVersion={}, err={:?}",
+                vec,
+                if is_ipv6 { '6' } else { '4' },
+                r.unwrap_err()
+            );
         }
     }
 
     #[test]
     fn test_algorithm_combos_same_url_not_okay() {
         // Make another WebService algo -- same url, but other options all differ
-        let other =
-            if let AlgorithmSpecification::WebService{
-                url,
-                timeout,
-                default_encoding
-            } = &*ALGO_WEB_SERVICE_SIMPLE {
-                AlgorithmSpecification::WebService {
-                    url: url.clone(),
-                    timeout: timeout.clone() + Duration::from_mins(1),
-                    default_encoding: if default_encoding.is_some() { None } else { Some(encoding_rs::UTF_8)}
-                }
+        let other = if let AlgorithmSpecification::WebService {
+            url,
+            timeout,
+            default_encoding,
+        } = &*ALGO_WEB_SERVICE_SIMPLE
+        {
+            AlgorithmSpecification::WebService {
+                url: url.clone(),
+                timeout: timeout.clone() + Duration::from_mins(1),
+                default_encoding: if default_encoding.is_some() {
+                    None
+                } else {
+                    Some(encoding_rs::UTF_8)
+                },
             }
-            else {
-                panic!("It should not be possible to get here.");
-            }
-        ;
+        } else {
+            panic!("It should not be possible to get here.");
+        };
 
-        let vec = vec!(other, ALGO_WEB_SERVICE_SIMPLE.clone());
+        let vec = vec![other, ALGO_WEB_SERVICE_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
             let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-            assert!(r.is_err(), "algos={:?}, ipVersion={}", vec, if is_ipv6 {'6'} else {'4'});
+            assert!(
+                r.is_err(),
+                "algos={:?}, ipVersion={}",
+                vec,
+                if is_ipv6 { '6' } else { '4' }
+            );
         }
     }
-
 
     #[test]
     fn test_algorithm_combos_different_plugins_okay() {
         let other = AlgorithmSpecification::Plugin {
             command: StringOrStringVec::String("/not/a/real/command".to_string()),
             timeout: Duration::from_secs(1),
-            encoding: None
+            encoding: None,
         };
-        let vec = vec!(other, ALGO_PLUGIN_SIMPLE.clone());
+        let vec = vec![other, ALGO_PLUGIN_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
             let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-            assert!(r.is_ok(), "algos={:?}, ipVersion={}, err={:?}", vec, if is_ipv6 {'6'} else {'4'}, r.unwrap_err());            
+            assert!(
+                r.is_ok(),
+                "algos={:?}, ipVersion={}, err={:?}",
+                vec,
+                if is_ipv6 { '6' } else { '4' },
+                r.unwrap_err()
+            );
         }
     }
 
     #[test]
     fn test_algorithm_combos_same_plugin_not_okay() {
         // Make another WebService algo -- same url, but other options all differ
-        let other =
-            if let AlgorithmSpecification::Plugin{
-                command,
-                timeout,
-                encoding
-            } = &*ALGO_PLUGIN_SIMPLE {
-                AlgorithmSpecification::Plugin {
-                    command: command.clone(),
-                    timeout: timeout.clone() + Duration::from_mins(1),
-                    encoding: if encoding.is_some() { None } else { Some(encoding_rs::UTF_8)}
-                }
+        let other = if let AlgorithmSpecification::Plugin {
+            command,
+            timeout,
+            encoding,
+        } = &*ALGO_PLUGIN_SIMPLE
+        {
+            AlgorithmSpecification::Plugin {
+                command: command.clone(),
+                timeout: timeout.clone() + Duration::from_mins(1),
+                encoding: if encoding.is_some() {
+                    None
+                } else {
+                    Some(encoding_rs::UTF_8)
+                },
             }
-            else {
-                panic!("It should not be possible to get here.");
-            }
-        ;
+        } else {
+            panic!("It should not be possible to get here.");
+        };
 
-        let vec = vec!(other, ALGO_PLUGIN_SIMPLE.clone());
+        let vec = vec![other, ALGO_PLUGIN_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
             let r = AlgorithmSpecification::validate_combination(vec.as_slice(), is_ipv6);
-            assert!(r.is_err(), "algos={:?}, ipVersion={}", vec, if is_ipv6 {'6'} else {'4'});
+            assert!(
+                r.is_err(),
+                "algos={:?}, ipVersion={}",
+                vec,
+                if is_ipv6 { '6' } else { '4' }
+            );
         }
     }
-
 }

@@ -10,43 +10,49 @@ pub mod posix {
     use anyhow::anyhow;
     use libc::{geteuid, getpwuid_r, strerror};
 
-
     #[inline]
     #[cfg(feature = "native-decode")]
     pub fn get_active_code_set() -> Option<String> {
         for var_to_try in ["LC_ALL", "LC_CTYPE", "LANG"] {
             if let Some(env_var_value) = std::env::var_os(var_to_try) {
                 if let Some(code_set) = get_code_set_for_env_var_value(&env_var_value) {
-                    log::debug!("Found env:{var_to_try}='{}'; using codeset: {}", String::from_utf8_lossy(env_var_value.as_encoded_bytes()), code_set);
+                    log::debug!(
+                        "Found env:{var_to_try}='{}'; using codeset: {}",
+                        String::from_utf8_lossy(env_var_value.as_encoded_bytes()),
+                        code_set
+                    );
                     return Some(code_set.to_string());
-                }
-                else {
-                    log::debug!("No usable codeset found in env:{var_to_try}='{env_var_value:?}'; ignoring");
+                } else {
+                    log::debug!(
+                        "No usable codeset found in env:{var_to_try}='{env_var_value:?}'; ignoring"
+                    );
                 }
             }
         }
         None
     }
 
-
     #[cfg(feature = "native-decode")]
-    pub fn get_code_set_for_env_var_value<'a>(env_var_value: &'a OsStr) -> Option<std::borrow::Cow<'a, str>> {
+    pub fn get_code_set_for_env_var_value<'a>(
+        env_var_value: &'a OsStr,
+    ) -> Option<std::borrow::Cow<'a, str>> {
         let os_value_bytes = env_var_value.as_encoded_bytes();
 
         // Find the index of the first period
         if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
             // Find the encoding (which may be terminated by an '@' modifier)
-            let codeset_name = if let Some(length) = os_value_bytes[start_offset..].iter().position(|b| *b == b'@') {
+            let codeset_name = if let Some(length) = os_value_bytes[start_offset..]
+                .iter()
+                .position(|b| *b == b'@')
+            {
                 &os_value_bytes[start_offset..(start_offset + length)]
-            }
-            else {
+            } else {
                 &os_value_bytes[start_offset..]
             };
 
             if codeset_name.len() == 0 {
                 return None;
-            }
-            else {
+            } else {
                 return Some(String::from_utf8_lossy(codeset_name));
             }
         }
@@ -54,17 +60,18 @@ pub mod posix {
         return None;
     }
 
-
     #[cfg(feature = "native-decode")]
-    pub fn convert_code_set_slice_to_string(code_set: &str, input: &[u8]) -> anyhow::Result<String> {
+    pub fn convert_code_set_slice_to_string(
+        code_set: &str,
+        input: &[u8],
+    ) -> anyhow::Result<String> {
         iconv_native::decode(input, code_set)
             .map_err(|e| anyhow!("Decoding error for code-set '{code_set}': {e}"))
     }
 
-
     pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
         let uid = unsafe { geteuid() };
-        
+
         let mut passwd_entry_buffer = [0i8; 16374];
         let mut passwd_entry = libc::passwd {
             pw_name: null_mut(),
@@ -73,7 +80,7 @@ pub mod posix {
             pw_gid: 0,
             pw_gecos: null_mut(),
             pw_dir: null_mut(),
-            pw_shell: null_mut()
+            pw_shell: null_mut(),
         };
 
         let mut getpwuid_result: *mut libc::passwd = null_mut();
@@ -83,7 +90,7 @@ pub mod posix {
                 &mut passwd_entry,
                 passwd_entry_buffer.as_mut_ptr(),
                 passwd_entry_buffer.len(),
-                &mut getpwuid_result
+                &mut getpwuid_result,
             )
         };
 
@@ -91,19 +98,13 @@ pub mod posix {
         if rc == 0 {
             if getpwuid_result == null_mut() {
                 result = Ok(None);
-            }
-            else {
-                let home_dir_cptr = unsafe {
-                    CStr::from_ptr((*getpwuid_result).pw_dir)
-                };
+            } else {
+                let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
                 let home_dir = OsStr::from_bytes(home_dir_cptr.to_bytes());
                 result = Ok(Some(PathBuf::from(home_dir)));
             }
-        }
-        else {
-            let error_msg_cptr = unsafe {
-                CStr::from_ptr(strerror(rc))
-            };
+        } else {
+            let error_msg_cptr = unsafe { CStr::from_ptr(strerror(rc)) };
             let error_str = String::from_utf8_lossy(error_msg_cptr.to_bytes());
             result = Err(anyhow!("{}", error_str));
         }
@@ -111,16 +112,19 @@ pub mod posix {
         result
     }
 
-
     #[cfg(test)]
     mod tests {
-        use std::env::var_os;
         use super::*;
+        use std::env::var_os;
 
         #[test]
         fn test_get_home_dir() {
             let maybe_home_dir = get_posix_user_home_dir();
-            assert!(maybe_home_dir.is_ok(), "err={:?}", maybe_home_dir.unwrap_err());
+            assert!(
+                maybe_home_dir.is_ok(),
+                "err={:?}",
+                maybe_home_dir.unwrap_err()
+            );
 
             let home_dir = maybe_home_dir.unwrap();
             let env_home_dir = var_os("HOME").map(|oss| PathBuf::from(oss));
@@ -130,10 +134,7 @@ pub mod posix {
         #[test]
         #[cfg(feature = "native-decode")]
         fn test_get_code_set_for_env_var_value() {
-            for (
-                env_value,
-                expected_code_set
-            ) in [
+            for (env_value, expected_code_set) in [
                 (b"en_US.UTF-8".as_slice(), Some("UTF-8")),
                 (b"en_GB.UTF-16LE".as_slice(), Some("UTF-16LE")),
                 (b"en_GB.UTF-16BE@modifier".as_slice(), Some("UTF-16BE")),
@@ -147,11 +148,15 @@ pub mod posix {
                 let env_value_osstr = OsStr::from_bytes(env_value);
                 let maybe_code_set = get_code_set_for_env_var_value(&env_value_osstr);
 
-                assert_eq!(maybe_code_set.as_deref(), expected_code_set, "env_value={:?}", env_value);
+                assert_eq!(
+                    maybe_code_set.as_deref(),
+                    expected_code_set,
+                    "env_value={:?}",
+                    env_value
+                );
             }
         }
 
-        
         #[test]
         #[cfg(feature = "native-decode")]
         fn test_get_encoding_for_code_page() {
@@ -161,12 +166,14 @@ pub mod posix {
             let data = "Test data";
             let data_utf8 = data.as_bytes();
 
-            for code_set in [
-                "UTF-8".as_slice(),
-                "WINDOWS-1252".as_slice(),
-            ] {
-                let maybe_result = convert_code_page_slice_to_string(code_page, data_utf8.as_slice());
-                assert!(maybe_result.is_ok(), "code_page={code_page} err={:?}", maybe_result.unwrap_err());
+            for code_set in ["UTF-8".as_slice(), "WINDOWS-1252".as_slice()] {
+                let maybe_result =
+                    convert_code_page_slice_to_string(code_page, data_utf8.as_slice());
+                assert!(
+                    maybe_result.is_ok(),
+                    "code_page={code_page} err={:?}",
+                    maybe_result.unwrap_err()
+                );
                 let result = maybe_result.unwrap();
                 assert_eq!(result, data, "code_page={code_page}");
             }
@@ -178,16 +185,17 @@ pub mod posix {
                 ("UTF-16lE".as_slice(), data_utf16le.as_slice()),
             ] {
                 let maybe_result = convert_code_set_slice_to_string(code_set, data_encoded);
-                assert!(maybe_result.is_ok(), "codeset={code_set} err={:?}", maybe_result.unwrap_err());
+                assert!(
+                    maybe_result.is_ok(),
+                    "codeset={code_set} err={:?}",
+                    maybe_result.unwrap_err()
+                );
                 let result = maybe_result.unwrap();
                 assert_eq!(result, data, "codeset={code_set}");
             }
         }
-
     }
-
 }
-
 
 #[cfg(windows)]
 pub mod windows {
@@ -201,23 +209,29 @@ pub mod windows {
     use windows_sys::Win32::Foundation::{LocalFree, E_INVALIDARG, HLOCAL, S_OK};
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::SystemServices::{LANG_NEUTRAL, SUBLANG_DEFAULT};
-    use windows_sys::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_LocalAppData, FOLDERID_ProgramData};
+    use windows_sys::Win32::UI::Shell::{
+        FOLDERID_LocalAppData, FOLDERID_ProgramData, SHGetKnownFolderPath,
+    };
 
     #[cfg(feature = "native-decode")]
-    pub fn convert_code_page_slice_to_string(code_page: u32, input: &[u8]) -> anyhow::Result<String> {
+    pub fn convert_code_page_slice_to_string(
+        code_page: u32,
+        input: &[u8],
+    ) -> anyhow::Result<String> {
         use windows_sys::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
 
         if code_page == 65001 {
             // Fast path for UTF-8, which is the most common code-page and doesn't require any transcoding.
-            return String::from_utf8(input.to_vec()).map_err(|e| anyhow!("UTF-8 decoding error: {e}"));
+            return String::from_utf8(input.to_vec())
+                .map_err(|e| anyhow!("UTF-8 decoding error: {e}"));
         }
 
         let flags: u32 = match code_page {
             // These code-pages specifically disallow any non-zero dwFlags value
             50220..=50225 | 50227 | 50229 | 57002..=57011 | 65000 => 0,
-            
+
             // For everything else, we want to detect bad sequences.
-            _ => MB_ERR_INVALID_CHARS
+            _ => MB_ERR_INVALID_CHARS,
         };
 
         let mut buf = Vec::<u16>::with_capacity(input.len());
@@ -228,7 +242,7 @@ pub mod windows {
                 input.as_ptr() as *const u8,
                 input.len() as i32,
                 buf.as_mut_ptr(),
-                buf.capacity() as i32
+                buf.capacity() as i32,
             )
         };
         if hr == 0 {
@@ -265,37 +279,36 @@ pub mod windows {
         std::slice::from_raw_parts(ptr, ptr_len)
     }
 
-
     #[inline]
     fn make_lang_id(primary_id: u32, sublang_id: u32) -> u32 {
         (sublang_id << 10) | primary_id
     }
 
-
     pub fn convert_hresult_to_error_message_string(message_id: u32) -> String {
         use windows_sys::Win32::System::Diagnostics::Debug::{
             FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
             FORMAT_MESSAGE_IGNORE_INSERTS,
-        };            
+        };
 
         let result: String;
         unsafe {
             let mut buffer: *mut u16 = null_mut();
 
             let length = FormatMessageW(
-                FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                FORMAT_MESSAGE_ALLOCATE_BUFFER
+                    | FORMAT_MESSAGE_FROM_SYSTEM
+                    | FORMAT_MESSAGE_IGNORE_INSERTS,
                 null_mut(),
                 message_id,
                 make_lang_id(LANG_NEUTRAL, SUBLANG_DEFAULT),
                 &mut buffer as *mut *mut u16 as *mut u16, // Cast to PWSTR/LPTSTR
                 0,
-                null_mut()
+                null_mut(),
             );
 
             if length == 0 || buffer.is_null() {
                 result = format!("Error code: {message_id:08X}");
-            }
-            else {
+            } else {
                 let slice = std::slice::from_raw_parts(buffer, length as usize);
                 result = String::from_utf16_lossy(slice).trim().to_string();
                 LocalFree(buffer as HLOCAL);
@@ -305,7 +318,6 @@ pub mod windows {
         result
     }
 
-
     // Our production code doesn't use environment variables to determine the paths of these folders because
     // they might not be passed through correctly in all contexts. So this uses the Windows API instead.
     #[inline]
@@ -313,14 +325,12 @@ pub mod windows {
         get_known_folder(FOLDERID_ProgramData)
     }
 
-
     // Our production code doesn't use environment variables to determine the paths of these folders because
     // they might not be passed through correctly in all contexts. So this uses the Windows API instead.
     #[inline]
     pub fn get_user_local_app_data_folder() -> anyhow::Result<Option<PathBuf>> {
         get_known_folder(FOLDERID_LocalAppData)
     }
-
 
     pub fn get_known_folder(guid: GUID) -> anyhow::Result<Option<PathBuf>> {
         let mut ptr: PWSTR = std::ptr::null_mut();
@@ -331,12 +341,13 @@ pub mod windows {
             let result_slice = unsafe { wcstr_to_slice(ptr) };
             let result_os = OsString::from_wide(result_slice);
             result = Ok(Some(PathBuf::from(result_os)));
-        }
-        else if hr == E_INVALIDARG {
-            result = Ok(None);  // No such known-folder on *this* system.
-        }
-        else {
-            result = Err(anyhow!("{}", convert_hresult_to_error_message_string(hr as u32)));
+        } else if hr == E_INVALIDARG {
+            result = Ok(None); // No such known-folder on *this* system.
+        } else {
+            result = Err(anyhow!(
+                "{}",
+                convert_hresult_to_error_message_string(hr as u32)
+            ));
         }
 
         if ptr != std::ptr::null_mut() {
@@ -346,18 +357,16 @@ pub mod windows {
         result
     }
 
-
     #[cfg(test)]
     mod tests {
-        use std::env::var_os;
         use super::*;
+        use std::env::var_os;
 
         #[repr(align(2))]
         struct AlignedSlice<T>(T);
 
         #[test]
         fn test_wcstr_len() {
-
             for (slice, expected_len) in [
                 (AlignedSlice(*b"\x00\x00").0.as_slice(), 0),
                 (AlignedSlice(*b"\xFF\xFF\x00\x00").0.as_slice(), 1),
@@ -399,16 +408,24 @@ pub mod windows {
             // context -- where they should be present and correct. That creates a validation opportunity for our
             // (Windows API) approach.
 
-            let maybe_local_app_data: anyhow::Result<Option<PathBuf>> = get_user_local_app_data_folder();
-            assert!(maybe_local_app_data.is_ok(), "err={:?}", maybe_local_app_data.unwrap_err());
-            
+            let maybe_local_app_data: anyhow::Result<Option<PathBuf>> =
+                get_user_local_app_data_folder();
+            assert!(
+                maybe_local_app_data.is_ok(),
+                "err={:?}",
+                maybe_local_app_data.unwrap_err()
+            );
+
             let local_app_data = maybe_local_app_data.unwrap();
             let env_local_app_data = var_os("LOCALAPPDATA").map(|oss| PathBuf::from(oss));
             assert_eq!(local_app_data, env_local_app_data);
 
-    
             let maybe_program_data = get_program_data_folder();
-            assert!(maybe_program_data.is_ok(), "err={:?}", maybe_program_data.unwrap_err());
+            assert!(
+                maybe_program_data.is_ok(),
+                "err={:?}",
+                maybe_program_data.unwrap_err()
+            );
 
             let program_data = maybe_program_data.unwrap();
             let env_program_data = var_os("ProgramData").map(|oss| PathBuf::from(oss));
@@ -428,10 +445,14 @@ pub mod windows {
 
             for code_page in [
                 1252,  // Western European (Windows Latin1)
-                65001,  // UTF-8
+                65001, // UTF-8
             ] {
                 let maybe_result = convert_code_page_slice_to_string(code_page, data.as_slice());
-                assert!(maybe_result.is_ok(), "code_page={code_page} err={:?}", maybe_result.unwrap_err());
+                assert!(
+                    maybe_result.is_ok(),
+                    "code_page={code_page} err={:?}",
+                    maybe_result.unwrap_err()
+                );
                 let result = maybe_result.unwrap();
                 assert_eq!(result, "Test data", "code_page={code_page}");
             }

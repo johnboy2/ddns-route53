@@ -6,19 +6,18 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use aws_config::ConfigLoader;
 use aws_sdk_route53::config::Credentials;
 use aws_types::region::Region;
-use clap::{Args, ArgAction, Parser, ValueHint};
+use clap::{ArgAction, Args, Parser, ValueHint};
 use fern::Dispatch;
 use humantime::format_rfc3339_seconds;
-use idna::{AsciiDenyList, domain_to_ascii_cow};
-use log::{LevelFilter, debug};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use idna::{domain_to_ascii_cow, AsciiDenyList};
+use log::{debug, LevelFilter};
+use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ip_algorithms::AlgorithmSpecification;
-
 
 const DEFAULT_UPDATE_POLL_SECS: f64 = 30.0;
 const DEFAULT_UPDATE_TIMEOUT_SECS: f64 = 300.0;
@@ -32,7 +31,6 @@ const MIN_UPDATE_POLL_SECONDS: f64 = 0.0;
 const MIN_UPDATE_TIMEOUT_SECONDS: f64 = 0.0;
 const MIN_TTL: i32 = 0;
 const MAX_TTL: i32 = 2147483647;
-
 
 mod serde_levelfilter {
     use std::str::FromStr;
@@ -65,7 +63,6 @@ mod serde_levelfilter {
     }
 }
 
-
 // Our CommonOptions struct has a lot of fields that are shared between the CLI and the configuration file, so we want
 // to use the same logic for validating each regardless of source (i.e., CLI or config file). These functions help us
 // do that, by providing a way to validate and parse each field consistently.
@@ -84,22 +81,30 @@ trait FieldNameString {
 
 struct FieldAwsProfile {}
 impl FieldNameString for FieldAwsProfile {
-    fn name() -> &'static str { "aws_profile" }
+    fn name() -> &'static str {
+        "aws_profile"
+    }
 }
 
 struct FieldAwsRegion {}
 impl FieldNameString for FieldAwsRegion {
-    fn name() -> &'static str { "aws_region" }
+    fn name() -> &'static str {
+        "aws_region"
+    }
 }
 
 struct FieldAwsAccessKeyId {}
 impl FieldNameString for FieldAwsAccessKeyId {
-    fn name() -> &'static str { "aws_access_key_id" }
+    fn name() -> &'static str {
+        "aws_access_key_id"
+    }
 }
 
 struct FieldAwsSecretAccessKey {}
 impl FieldNameString for FieldAwsSecretAccessKey {
-    fn name() -> &'static str { "aws_secret_access_key" }
+    fn name() -> &'static str {
+        "aws_secret_access_key"
+    }
 }
 
 fn parse_nonempty_string<FieldParams>(value: &str) -> anyhow::Result<String>
@@ -107,9 +112,11 @@ where
     FieldParams: FieldNameString,
 {
     if value.is_empty() {
-        Err(anyhow!("value for {0} cannot be empty", FieldParams::name()))
-    }
-    else {
+        Err(anyhow!(
+            "value for {0} cannot be empty",
+            FieldParams::name()
+        ))
+    } else {
         Ok(value.to_string())
     }
 }
@@ -121,14 +128,12 @@ where
 {
     if let Some(value) = Option::<String>::deserialize(deserializer)?.as_ref() {
         parse_nonempty_string::<FieldParams>(value.as_str())
-        .map(|r| Some(r))
-        .map_err(|e| D::Error::custom(e.to_string()))
-    }
-    else {
+            .map(|r| Some(r))
+            .map_err(|e| D::Error::custom(e.to_string()))
+    } else {
         Ok(None)
     }
 }
-
 
 trait NumericFieldParameters {
     type OutputType;
@@ -143,10 +148,18 @@ struct FieldTTL {}
 impl NumericFieldParameters for FieldTTL {
     type OutputType = i32;
 
-    fn name() -> &'static str { "route53_record_ttl" }
-    fn type_name_singular() -> &'static str { "an integer"}
-    fn min() -> Self::OutputType { MIN_TTL }
-    fn max() -> Self::OutputType { MAX_TTL }
+    fn name() -> &'static str {
+        "route53_record_ttl"
+    }
+    fn type_name_singular() -> &'static str {
+        "an integer"
+    }
+    fn min() -> Self::OutputType {
+        MIN_TTL
+    }
+    fn max() -> Self::OutputType {
+        MAX_TTL
+    }
 }
 
 // This function ensures very large numbers are treated the same as any other "out-of-range" value, rather than
@@ -164,63 +177,86 @@ where
 
     return Err(anyhow!(
         "value for {0} must be {1} in the range {2}-{3}",
-        FieldParams::name(), FieldParams::type_name_singular(), FieldParams::min(), FieldParams::max()
+        FieldParams::name(),
+        FieldParams::type_name_singular(),
+        FieldParams::min(),
+        FieldParams::max()
     ));
 }
 
 // This function ensures very large numbers are treated the same as any other "out-of-range" value, rather than
 // overflowing or emitting some other, less-graceful error.
-fn deser_ranged_number<'de, D, FieldParams>(deserializer: D) -> Result<Option<FieldParams::OutputType>, D::Error>
+fn deser_ranged_number<'de, D, FieldParams>(
+    deserializer: D,
+) -> Result<Option<FieldParams::OutputType>, D::Error>
 where
     D: Deserializer<'de>,
     FieldParams: NumericFieldParameters,
-    <FieldParams as NumericFieldParameters>::OutputType: Deserialize<'de> + Display + FromStr + PartialOrd,
+    <FieldParams as NumericFieldParameters>::OutputType:
+        Deserialize<'de> + Display + FromStr + PartialOrd,
 {
     if let Ok(value) = FieldParams::OutputType::deserialize(deserializer) {
         if FieldParams::min() <= value && value <= FieldParams::max() {
             return Ok(Some(value));
         }
     }
-    
+
     Err(D::Error::custom(format!(
         "value for {0} must be {1} in the range {2}-{3}",
-        FieldParams::name(), FieldParams::type_name_singular(), FieldParams::min(), FieldParams::max()
+        FieldParams::name(),
+        FieldParams::type_name_singular(),
+        FieldParams::min(),
+        FieldParams::max()
     )))
 }
-
 
 struct FieldUpdateTimeout {}
 impl NumericFieldParameters for FieldUpdateTimeout {
     type OutputType = f64;
 
-    fn name() -> &'static str { "route53_update_timeout" }
-    fn type_name_singular() -> &'static str { "a number" }
-    fn min() -> Self::OutputType { MIN_UPDATE_TIMEOUT_SECONDS }
-    fn max() -> f64 { MAX_UPDATE_TIMEOUT_SECONDS }
+    fn name() -> &'static str {
+        "route53_update_timeout"
+    }
+    fn type_name_singular() -> &'static str {
+        "a number"
+    }
+    fn min() -> Self::OutputType {
+        MIN_UPDATE_TIMEOUT_SECONDS
+    }
+    fn max() -> f64 {
+        MAX_UPDATE_TIMEOUT_SECONDS
+    }
 }
 
 struct FieldUpdatePollInterval {}
 impl NumericFieldParameters for FieldUpdatePollInterval {
     type OutputType = f64;
 
-    fn name() -> &'static str { "route53_update_poll_interval" }
-    fn type_name_singular() -> &'static str { "a number" }
-    fn min() -> Self::OutputType { MIN_UPDATE_POLL_SECONDS }
-    fn max() -> Self::OutputType { MAX_UPDATE_POLL_SECONDS }
+    fn name() -> &'static str {
+        "route53_update_poll_interval"
+    }
+    fn type_name_singular() -> &'static str {
+        "a number"
+    }
+    fn min() -> Self::OutputType {
+        MIN_UPDATE_POLL_SECONDS
+    }
+    fn max() -> Self::OutputType {
+        MAX_UPDATE_POLL_SECONDS
+    }
 }
-
 
 #[derive(Args, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct CommonOptions {
     /// The fully-qualified domain name of the host to update. (This must be specified in either a configuration file
     /// or on the command-line.)
-    #[arg(short='n', long)]
+    #[arg(short = 'n', long)]
     pub host_name: Option<String>,
 
     /// (Optional) The Route53 zone ID within AWS to keep up to date. If not specified, the utility will attempt to
     /// resolve this dynamically
-    #[arg(short='z', long, value_name = "ZONE_ID")]
+    #[arg(short = 'z', long, value_name = "ZONE_ID")]
     pub aws_route53_zone_id: Option<String>,
 
     /// The TTL use when updating the applicable Route53 resource record(s). Defaults to 3600 unless overridden by a
@@ -288,7 +324,6 @@ struct CommonOptions {
     pub ipv6_algorithms: Option<Vec<AlgorithmSpecification>>,
 }
 
-
 #[derive(Parser)]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct CliOptions {
@@ -298,7 +333,7 @@ struct CliOptions {
     pub config_path: Option<std::path::PathBuf>,
 
     /// Do not update Route53, even if its current value is wrong
-    #[arg(short='u', long)]
+    #[arg(short = 'u', long)]
     pub no_update: bool,
 
     /// Increase console logging verbosity (may be used more than once)
@@ -313,7 +348,6 @@ struct CliOptions {
     pub common: CommonOptions,
 }
 
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct FileOptions {
@@ -327,13 +361,12 @@ struct FileOptions {
     pub aws_secret_access_key: Option<String>,
 }
 
-
 fn serialize_duration_as_secs<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-where S: Serializer
+where
+    S: Serializer,
 {
     serializer.serialize_f64(duration.as_secs_f64())
 }
-
 
 #[derive(Default, Serialize)]
 pub struct Config {
@@ -342,10 +375,16 @@ pub struct Config {
     pub route53_zone_id: Option<String>,
     pub route53_record_ttl: i32,
 
-    #[serde(rename = "update_timeout_seconds", serialize_with = "serialize_duration_as_secs")]
+    #[serde(
+        rename = "update_timeout_seconds",
+        serialize_with = "serialize_duration_as_secs"
+    )]
     pub update_timeout: Duration,
 
-    #[serde(rename = "update_poll_interval_seconds", serialize_with = "serialize_duration_as_secs")]
+    #[serde(
+        rename = "update_poll_interval_seconds",
+        serialize_with = "serialize_duration_as_secs"
+    )]
     pub update_poll_interval: Duration,
 
     pub no_update: bool,
@@ -353,40 +392,43 @@ pub struct Config {
     pub ipv6_algorithms: Vec<AlgorithmSpecification>,
 
     #[serde(skip)]
-    pub host_name_normalized: String
+    pub host_name_normalized: String,
 }
 
 impl Config {
     pub fn load() -> anyhow::Result<(Self, ConfigLoader)> {
         let cli_args = CliOptions::parse();
         let maybe_file_config: Option<FileOptions>;
-        let mut result = Self { ..Default::default() };
+        let mut result = Self {
+            ..Default::default()
+        };
         let console_log_dispatcher = create_console_log_dispatcher(&cli_args);
 
-        match find_configuration_file(
-            cli_args.config_path.map(|pb| Cow::Owned(pb))
-        ) {
+        match find_configuration_file(cli_args.config_path.map(|pb| Cow::Owned(pb))) {
             Ok(maybe_file_path) => {
                 if let Some(file_path) = maybe_file_path {
                     match load_config_file(&file_path) {
                         Ok(config) => {
                             maybe_file_config = Some(config);
                             result.config_file_path = Some(file_path.to_path_buf());
-                        },
+                        }
                         Err(e) => {
                             // Ensure at least the console-log is setup before returning the error
-                            console_log_dispatcher.apply().expect("multiple loggers not allowed");
+                            console_log_dispatcher
+                                .apply()
+                                .expect("multiple loggers not allowed");
                             return Err(e);
                         }
                     }
-                }
-                else {
+                } else {
                     maybe_file_config = None;
                 }
-            },
+            }
             Err(e) => {
                 // Ensure at least the console-log is setup before returning the error
-                console_log_dispatcher.apply().expect("multiple loggers not allowed");
+                console_log_dispatcher
+                    .apply()
+                    .expect("multiple loggers not allowed");
                 return Err(e);
             }
         };
@@ -400,20 +442,25 @@ impl Config {
         // in the config file (if given), and returns the first corresponding value it finds. This allows CLI args to
         // override config file values, while still allowing config files to set various baselines.
         macro_rules! take_first_defined {
-            ($name:ident) => { cli.$name.as_ref().or(file.map(|o| o.$name.as_ref()).flatten()) }
+            ($name:ident) => {
+                cli.$name
+                    .as_ref()
+                    .or(file.map(|o| o.$name.as_ref()).flatten())
+            };
         }
 
-        if let Some(log_file_path) = take_first_defined!(log_file).map(|pb| pb.as_path())
-        {
+        if let Some(log_file_path) = take_first_defined!(log_file).map(|pb| pb.as_path()) {
             let file_log_dispatcher = match create_file_log_dispatcher(
-                log_file_path, 
+                log_file_path,
                 take_first_defined!(log_level).unwrap_or(&DEFAULT_LOG_FILE_LEVEL),
-                take_first_defined!(log_level_other).unwrap_or(&DEFAULT_LOG_FILE_LEVEL_OTHER)
+                take_first_defined!(log_level_other).unwrap_or(&DEFAULT_LOG_FILE_LEVEL_OTHER),
             ) {
                 Ok(dispatcher) => dispatcher,
                 Err(e) => {
                     // Ensure at least the console-log is setup before returning the error
-                    console_log_dispatcher.apply().expect("multiple loggers not allowed");
+                    console_log_dispatcher
+                        .apply()
+                        .expect("multiple loggers not allowed");
                     return Err(e);
                 }
             };
@@ -424,23 +471,23 @@ impl Config {
                 .chain(file_log_dispatcher)
                 .apply()
                 .expect("multiple loggers not allowed");
-        }
-        else {
+        } else {
             // No log-file given. Setup the console logger only.
-            console_log_dispatcher.apply().expect("multiple loggers not allowed");
+            console_log_dispatcher
+                .apply()
+                .expect("multiple loggers not allowed");
         }
 
-        result.host_name =
-            take_first_defined!(host_name)
+        result.host_name = take_first_defined!(host_name)
             .ok_or(anyhow!("Missing required option: 'host_name'"))?
-            .clone()
-        ;
+            .clone();
         result.host_name_normalized = normalize_host_name(result.host_name.as_str())?.to_string();
 
-        result.route53_record_ttl = *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
+        result.route53_record_ttl =
+            *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
 
         result.update_timeout = Duration::from_secs_f64(
-            *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS)            
+            *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS),
         );
 
         result.update_poll_interval = Duration::from_secs_f64(
@@ -455,10 +502,11 @@ impl Config {
 
         if let Some(ip_algos) = take_first_defined!(ipv4_algorithms) {
             // Only take them if it isn't JUST the 'None' algorithm
-            let has_none_only = ip_algos.len() == 1 && match ip_algos[0] {
-                AlgorithmSpecification::None => true,
-                _ => false
-            };
+            let has_none_only = ip_algos.len() == 1
+                && match ip_algos[0] {
+                    AlgorithmSpecification::None => true,
+                    _ => false,
+                };
             if !has_none_only {
                 AlgorithmSpecification::validate_combination(ip_algos.as_slice(), false)?;
                 result.ipv4_algorithms = ip_algos.clone();
@@ -467,10 +515,11 @@ impl Config {
 
         if let Some(ip_algos) = take_first_defined!(ipv6_algorithms) {
             // Only take them if it isn't JUST the 'None' algorithm
-            let has_none_only = ip_algos.len() == 1 && match ip_algos[0] {
-                AlgorithmSpecification::None => true,
-                _ => false
-            };
+            let has_none_only = ip_algos.len() == 1
+                && match ip_algos[0] {
+                    AlgorithmSpecification::None => true,
+                    _ => false,
+                };
             if !has_none_only {
                 AlgorithmSpecification::validate_combination(ip_algos.as_slice(), true)?;
                 result.ipv6_algorithms = ip_algos.clone();
@@ -486,15 +535,18 @@ impl Config {
         if let Some(aws_profile) = cli_args.common.aws_profile.as_ref() {
             // The CLI only allows a profile (not explicit credentials); so no conflicts are possible.
             aws_config_loader = aws_config_loader.profile_name(aws_profile.clone());
-        }
-        else if let Some(file_opts_ref) = maybe_file_config.as_ref() {
-            if file_opts_ref.aws_access_key_id.is_some() || file_opts_ref.aws_secret_access_key.is_some() {
+        } else if let Some(file_opts_ref) = maybe_file_config.as_ref() {
+            if file_opts_ref.aws_access_key_id.is_some()
+                || file_opts_ref.aws_secret_access_key.is_some()
+            {
                 // If the config file specifies either a key or a secret, then it must specify both (because the AWS
                 // SDK will throw an error if you provide only one of them).
-                let access_key = file_opts_ref.aws_access_key_id.as_ref()
-                    .ok_or(anyhow!("aws_access_key_id must be provided when aws_secret_access_key is given"))?;
-                let secret_key = file_opts_ref.aws_secret_access_key.as_ref()
-                    .ok_or(anyhow!("aws_secret_access_key must be provided when aws_access_key_id is given"))?;
+                let access_key = file_opts_ref.aws_access_key_id.as_ref().ok_or(anyhow!(
+                    "aws_access_key_id must be provided when aws_secret_access_key is given"
+                ))?;
+                let secret_key = file_opts_ref.aws_secret_access_key.as_ref().ok_or(anyhow!(
+                    "aws_secret_access_key must be provided when aws_access_key_id is given"
+                ))?;
 
                 if file_opts_ref.common.aws_profile.is_some() {
                     return Err(anyhow!(
@@ -502,16 +554,10 @@ impl Config {
                     ));
                 }
 
-                let creds = Credentials::new(
-                    access_key.clone(),
-                    secret_key.clone(),
-                    None,
-                    None,
-                    "static"
-                );
+                let creds =
+                    Credentials::new(access_key.clone(), secret_key.clone(), None, None, "static");
                 aws_config_loader = aws_config_loader.credentials_provider(creds);
-            }
-            else if let Some(profile_name) = file_opts_ref.common.aws_profile.as_ref() {
+            } else if let Some(profile_name) = file_opts_ref.common.aws_profile.as_ref() {
                 aws_config_loader = aws_config_loader.profile_name(profile_name.clone());
             }
         }
@@ -519,7 +565,6 @@ impl Config {
         Ok((result, aws_config_loader.into()))
     }
 }
-
 
 fn create_console_log_dispatcher(cli_args: &CliOptions) -> Dispatch {
     Dispatch::new()
@@ -553,10 +598,9 @@ fn create_console_log_dispatcher(cli_args: &CliOptions) -> Dispatch {
 fn create_file_log_dispatcher(
     file_path: &Path,
     level: &LevelFilter,
-    level_other: &LevelFilter
+    level_other: &LevelFilter,
 ) -> anyhow::Result<Dispatch> {
-    Ok(
-        Dispatch::new()
+    Ok(Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
                 "{} [{}] {}: {}",
@@ -568,19 +612,17 @@ fn create_file_log_dispatcher(
         })
         .level_for(env!("CARGO_CRATE_NAME"), *level)
         .level(*level_other)
-        .chain(fern::log_file(file_path)?)
-    )
+        .chain(fern::log_file(file_path)?))
 }
 
 fn find_configuration_file(
-    cli_path: Option<Cow<'static, Path>>
+    cli_path: Option<Cow<'static, Path>>,
 ) -> anyhow::Result<Option<Cow<'static, Path>>> {
     if let Some(cli_path) = cli_path {
         if cli_path.as_os_str() == "-" {
             // Invoking user specified "no" configuraiton file
             return Ok(None);
-        }
-        else {
+        } else {
             // Use the caller-specified configuration file
             return Ok(Some(cli_path));
         }
@@ -613,7 +655,7 @@ fn find_configuration_file(
         for candidate_str in [
             "/usr/local/etc/ddns-route53.conf",
             "/etc/opt/ddns-route53.conf",
-            "/etc/ddns-route53.conf"
+            "/etc/ddns-route53.conf",
         ] {
             let candidate = Path::new(candidate_str);
             if candidate.is_file() {
@@ -626,7 +668,7 @@ fn find_configuration_file(
     {
         for path in [
             crate::os_helpers::windows::get_user_local_app_data_folder()?, // E.g., "C:\Users\John.Doe\AppData\Local"
-            crate::os_helpers::windows::get_program_data_folder()? // E.g., "C:\ProgramData"
+            crate::os_helpers::windows::get_program_data_folder()?,        // E.g., "C:\ProgramData"
         ] {
             if let Some(candidate_dir) = path {
                 let candidate = candidate_dir.join("ddns-route53.conf");
@@ -679,7 +721,8 @@ fn load_config_file<'a>(path: &Cow<'a, Path>) -> anyhow::Result<FileOptions> {
         .read_to_string(&mut content)
         .context("I/O error reading config file")?;
 
-    let config_file = toml::from_str::<FileOptions>(content.as_str()).context("failed to load config file")?;
+    let config_file =
+        toml::from_str::<FileOptions>(content.as_str()).context("failed to load config file")?;
 
     if config_file.aws_access_key_id.is_some() {
         if config_file.aws_secret_access_key.is_none() {
@@ -692,8 +735,7 @@ fn load_config_file<'a>(path: &Cow<'a, Path>) -> anyhow::Result<FileOptions> {
                 "config file: Cannot provide 'aws_profile' with 'aws_access_key_id'/'aws_secret_access_key'"
             ));
         }
-    }
-    else {
+    } else {
         if config_file.aws_secret_access_key.is_some() {
             return Err(anyhow!("config file: Missing 'aws_access_key_id' (required due to 'aws_secret_access_key')"));
         }
@@ -703,16 +745,12 @@ fn load_config_file<'a>(path: &Cow<'a, Path>) -> anyhow::Result<FileOptions> {
 }
 
 fn normalize_host_name(host_name: &str) -> anyhow::Result<Cow<'_, str>> {
-    let name_lower_idna = domain_to_ascii_cow(
-        host_name.as_bytes(),
-        AsciiDenyList::URL
-    )?;
+    let name_lower_idna = domain_to_ascii_cow(host_name.as_bytes(), AsciiDenyList::URL)?;
     validate_idna_host_name(name_lower_idna.as_ref())?;
 
     if name_lower_idna.ends_with(".") {
         Ok(name_lower_idna)
-    }
-    else {
+    } else {
         Ok(Cow::Owned(name_lower_idna.to_string() + "."))
     }
 }
@@ -747,8 +785,8 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
             // Get the first/leading character of the current label
             if let Some((idx, ch)) = itr.next() {
                 match ch {
-                    'a'..='z' | 'A'..='Z' | '0'..='9' => {},
-                    _ => { 
+                    'a'..='z' | 'A'..='Z' | '0'..='9' => {}
+                    _ => {
                         return Err(anyhow!(
                             "invalid host_name: character at offset {0} must be one of a-z, A-Z, or 0-9 (got: {1})",
                             idx, get_char_representation(ch)
@@ -758,8 +796,7 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
                 last_ch = ch;
                 last_ch_idx = idx;
                 label_len += 1;
-            }
-            else {
+            } else {
                 // Since we know the host-name wasn't completely empty (since we checked at the very top), having
                 // nothing (end of string) after a dot (separator) means it was a final, trailing dot. That is OK.
                 return Ok(());
@@ -768,12 +805,12 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
             let mut got_label_terminator = false;
             while let Some((idx, ch)) = itr.next() {
                 match ch {
-                    'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {},
+                    'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => {}
                     '.' => {
                         last_ch_idx = idx - 1;
                         got_label_terminator = true;
                         break;
-                    },
+                    }
                     _ => {
                         return Err(anyhow!(
                             "invalid host_name: character at offset {0} must be one of a-z, A-Z, 0-9, -, or . (got: {1})",
@@ -804,7 +841,6 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,7 +849,7 @@ mod tests {
     #[serde(default)]
     struct SerdeLevelFilter {
         #[serde(with = "serde_levelfilter")]
-        level: Option<LevelFilter>
+        level: Option<LevelFilter>,
     }
 
     #[test]
@@ -832,12 +868,21 @@ mod tests {
                 assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
                 let result = maybe_struct.unwrap();
                 assert_eq!(result.level, expected, "{:?}", expected);
-            }
-            else {
-                assert!(maybe_struct.is_err(), "value: {:?}, result:{:?}", expected, maybe_struct.unwrap());
+            } else {
+                assert!(
+                    maybe_struct.is_err(),
+                    "value: {:?}, result:{:?}",
+                    expected,
+                    maybe_struct.unwrap()
+                );
                 let err = maybe_struct.unwrap_err();
                 let msg = err.to_string();
-                assert!(msg.contains("This level is not allowed for the log file."), "value={:?}, msg={:?}", expected, msg);
+                assert!(
+                    msg.contains("This level is not allowed for the log file."),
+                    "value={:?}, msg={:?}",
+                    expected,
+                    msg
+                );
             }
         }
     }
@@ -849,7 +894,6 @@ mod tests {
         let result = maybe_struct.unwrap();
         assert!(result.level.is_none());
     }
-
 
     #[test]
     fn test_validate_ttl() {
@@ -870,15 +914,22 @@ mod tests {
             }
 
             let toml_str = format!("aws_route53_record_ttl = {value}");
-            let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
+            let maybe_struct: Result<FileOptions, toml::de::Error> =
+                toml::from_str(toml_str.as_str());
             if expect_ok {
-                assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
+                assert!(
+                    maybe_struct.is_ok(),
+                    "value={value}, err={:?}",
+                    maybe_struct.unwrap_err()
+                );
                 let struct_obj = maybe_struct.unwrap();
-                assert!(struct_obj.common.aws_route53_record_ttl.is_some(), "expect config option is populated");
+                assert!(
+                    struct_obj.common.aws_route53_record_ttl.is_some(),
+                    "expect config option is populated"
+                );
                 let struct_value = struct_obj.common.aws_route53_record_ttl.unwrap();
                 assert_eq!(struct_value, value);
-            }
-            else {
+            } else {
                 assert!(maybe_struct.is_err(), "value={value}");
             }
         }
@@ -889,7 +940,10 @@ mod tests {
         for (value, expect_ok) in [
             (MIN_UPDATE_TIMEOUT_SECONDS, true),
             (MAX_UPDATE_TIMEOUT_SECONDS, true),
-            ((MIN_UPDATE_TIMEOUT_SECONDS + MAX_UPDATE_TIMEOUT_SECONDS) * 0.5, true),
+            (
+                (MIN_UPDATE_TIMEOUT_SECONDS + MAX_UPDATE_TIMEOUT_SECONDS) * 0.5,
+                true,
+            ),
             (MIN_UPDATE_TIMEOUT_SECONDS - 1.0, false),
             (MAX_UPDATE_TIMEOUT_SECONDS + 1.0, false),
         ] {
@@ -900,33 +954,41 @@ mod tests {
                 assert!(r.is_ok(), "value={value}, err={:?}", r.unwrap_err());
                 let r = r.unwrap();
                 assert_eq!(r, value, "value={value}");
-            }
-            else {
+            } else {
                 assert!(r.is_err(), "value={value}");
             }
 
             let toml_str = format!("update_timeout_seconds = {value}");
-            let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
+            let maybe_struct: Result<FileOptions, toml::de::Error> =
+                toml::from_str(toml_str.as_str());
             if expect_ok {
-                assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
+                assert!(
+                    maybe_struct.is_ok(),
+                    "value={value}, err={:?}",
+                    maybe_struct.unwrap_err()
+                );
                 let struct_obj = maybe_struct.unwrap();
-                assert!(struct_obj.common.update_timeout_seconds.is_some(), "expect config option is populated");
+                assert!(
+                    struct_obj.common.update_timeout_seconds.is_some(),
+                    "expect config option is populated"
+                );
                 let struct_value = struct_obj.common.update_timeout_seconds.unwrap();
                 assert_eq!(struct_value, value);
-            }
-            else {
+            } else {
                 assert!(maybe_struct.is_err(), "value={value}");
             }
         }
     }
-
 
     #[test]
     fn test_validate_update_poll_interval() {
         for (value, expect_ok) in [
             (MIN_UPDATE_POLL_SECONDS, true),
             (MAX_UPDATE_POLL_SECONDS, true),
-            ((MIN_UPDATE_POLL_SECONDS + MAX_UPDATE_POLL_SECONDS) * 0.5, true),
+            (
+                (MIN_UPDATE_POLL_SECONDS + MAX_UPDATE_POLL_SECONDS) * 0.5,
+                true,
+            ),
             (MIN_UPDATE_POLL_SECONDS - 1.0, false),
             (MAX_UPDATE_POLL_SECONDS + 1.0, false),
         ] {
@@ -937,21 +999,27 @@ mod tests {
                 assert!(r.is_ok(), "value={value}, err={:?}", r.unwrap_err());
                 let r = r.unwrap();
                 assert_eq!(r, value, "value={value}");
-            }
-            else {
+            } else {
                 assert!(r.is_err(), "value={value}");
             }
 
             let toml_str = format!("update_poll_seconds = {value}");
-            let maybe_struct: Result<FileOptions, toml::de::Error> = toml::from_str(toml_str.as_str());
+            let maybe_struct: Result<FileOptions, toml::de::Error> =
+                toml::from_str(toml_str.as_str());
             if expect_ok {
-                assert!(maybe_struct.is_ok(), "value={value}, err={:?}", maybe_struct.unwrap_err());
+                assert!(
+                    maybe_struct.is_ok(),
+                    "value={value}, err={:?}",
+                    maybe_struct.unwrap_err()
+                );
                 let struct_obj = maybe_struct.unwrap();
-                assert!(struct_obj.common.update_poll_seconds.is_some(), "expect config option is populated");
+                assert!(
+                    struct_obj.common.update_poll_seconds.is_some(),
+                    "expect config option is populated"
+                );
                 let struct_value = struct_obj.common.update_poll_seconds.unwrap();
                 assert_eq!(struct_value, value);
-            }
-            else {
+            } else {
                 assert!(maybe_struct.is_err(), "value={value}");
             }
         }
@@ -964,7 +1032,6 @@ mod tests {
             ("www.google.com", true),
             ("domain.", true),
             ("xn--jxalpdlp.test", true),
-
             (".", false),
             ("-example", false),
             ("example-", false),
@@ -975,30 +1042,38 @@ mod tests {
             ("*.wildcard.domain", false),
             ("*.wildcard.domain.", false),
             ("wildcard.*.domain", false),
-            ("123456789012345678901234567890123456789012345678901234567890123", true),
-            ("1234567890123456789012345678901234567890123456789012345678901234", false)
+            (
+                "123456789012345678901234567890123456789012345678901234567890123",
+                true,
+            ),
+            (
+                "1234567890123456789012345678901234567890123456789012345678901234",
+                false,
+            ),
         ];
         for (host_name, expect_valid) in tests {
             let result = validate_idna_host_name(host_name);
             if expect_valid {
                 assert!(result.is_ok(), "err: {:?}", result.unwrap_err());
-            }
-            else {
+            } else {
                 assert!(result.is_err(), "host_name: {:?}", host_name);
                 let err = result.unwrap_err();
                 let msg = err.to_string();
-                assert!(msg.starts_with("invalid host_name: "), "e: {:?}", msg.as_str());
+                assert!(
+                    msg.starts_with("invalid host_name: "),
+                    "e: {:?}",
+                    msg.as_str()
+                );
             }
         }
     }
-
 
     #[test]
     fn test_normalize_host_name() {
         let tests = [
             ("example.com", "example.com."),
             ("EXAMPLE.COM", "example.com."),
-            ("España.Example.Com", "xn--espaa-rta.example.com.")
+            ("España.Example.Com", "xn--espaa-rta.example.com."),
         ];
 
         for (host_name, expected_normlization) in tests {

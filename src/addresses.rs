@@ -43,7 +43,6 @@ impl From<&Route53AddressRecords> for Addresses {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,8 +59,20 @@ mod tests {
     #[test]
     fn test_from_empty_record_set() {
         let empty = Route53AddressRecords {
-            v4: Some(ResourceRecordSet::builder().name("example.com").r#type(RrType::A).build().unwrap()),
-            v6: Some(ResourceRecordSet::builder().name("example.com").r#type(RrType::Aaaa).build().unwrap())
+            v4: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::A)
+                    .build()
+                    .unwrap(),
+            ),
+            v6: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::Aaaa)
+                    .build()
+                    .unwrap(),
+            ),
         };
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 0, "{:?}", addresses.v4);
@@ -73,20 +84,25 @@ mod tests {
         let ip_addr = "192.168.0.1";
 
         let empty = Route53AddressRecords {
-            v4: Some(ResourceRecordSet::builder()
-                .name("example.com")
-                .r#type(RrType::A)
-                .resource_records(ResourceRecord::builder().value(ip_addr).build().unwrap())
-                .build()
-                .unwrap()
+            v4: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::A)
+                    .resource_records(ResourceRecord::builder().value(ip_addr).build().unwrap())
+                    .build()
+                    .unwrap(),
             ),
-            v6: None
+            v6: None,
         };
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 1, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 0, "{:?}", addresses.v6);
 
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr).unwrap()), "{:?}", addresses.v4);
+        assert!(
+            addresses.v4.contains(&Ipv4Addr::from_str(ip_addr).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
     }
 
     #[test]
@@ -98,28 +114,59 @@ mod tests {
         let ip_addr5 = "192.168.0.5";
 
         let empty = Route53AddressRecords {
-            v4: Some(ResourceRecordSet::builder()
-                .name("example.com")
-                .r#type(RrType::A)
-                .resource_records(ResourceRecord::builder().value(ip_addr1).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr2).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr3).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr4).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr5).build().unwrap())
-                .build()
-                .unwrap()
+            v4: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::A)
+                    .resource_records(ResourceRecord::builder().value(ip_addr1).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr2).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr3).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr4).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr5).build().unwrap())
+                    .build()
+                    .unwrap(),
             ),
-            v6: None
+            v6: None,
         };
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 5, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 0, "{:?}", addresses.v6);
 
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr1).unwrap()), "{:?}", addresses.v4);
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr2).unwrap()), "{:?}", addresses.v4);
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr3).unwrap()), "{:?}", addresses.v4);
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr4).unwrap()), "{:?}", addresses.v4);
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr5).unwrap()), "{:?}", addresses.v4);
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr1).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr2).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr3).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr4).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr5).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
     }
 
     #[test]
@@ -128,19 +175,24 @@ mod tests {
 
         let empty = Route53AddressRecords {
             v4: None,
-            v6: Some(ResourceRecordSet::builder()
-                .name("example.com")
-                .r#type(RrType::Aaaa)
-                .resource_records(ResourceRecord::builder().value(ip_addr).build().unwrap())
-                .build()
-                .unwrap()
-            )
+            v6: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::Aaaa)
+                    .resource_records(ResourceRecord::builder().value(ip_addr).build().unwrap())
+                    .build()
+                    .unwrap(),
+            ),
         };
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 0, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 1, "{:?}", addresses.v6);
 
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr).unwrap()), "{:?}", addresses.v6);
+        assert!(
+            addresses.v6.contains(&Ipv6Addr::from_str(ip_addr).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
     }
 
     #[test]
@@ -153,29 +205,59 @@ mod tests {
 
         let empty = Route53AddressRecords {
             v4: None,
-            v6: Some(ResourceRecordSet::builder()
-                .name("example.com")
-                .r#type(RrType::Aaaa)
-                .resource_records(ResourceRecord::builder().value(ip_addr1).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr2).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr3).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr4).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr5).build().unwrap())
-                .build()
-                .unwrap()
-            )
+            v6: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::Aaaa)
+                    .resource_records(ResourceRecord::builder().value(ip_addr1).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr2).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr3).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr4).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr5).build().unwrap())
+                    .build()
+                    .unwrap(),
+            ),
         };
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 0, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 5, "{:?}", addresses.v6);
 
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr1).unwrap()), "{:?}", addresses.v6);
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr2).unwrap()), "{:?}", addresses.v6);
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr3).unwrap()), "{:?}", addresses.v6);
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr4).unwrap()), "{:?}", addresses.v6);
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr5).unwrap()), "{:?}", addresses.v6);
+        assert!(
+            addresses
+                .v6
+                .contains(&Ipv6Addr::from_str(ip_addr1).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
+        assert!(
+            addresses
+                .v6
+                .contains(&Ipv6Addr::from_str(ip_addr2).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
+        assert!(
+            addresses
+                .v6
+                .contains(&Ipv6Addr::from_str(ip_addr3).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
+        assert!(
+            addresses
+                .v6
+                .contains(&Ipv6Addr::from_str(ip_addr4).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
+        assert!(
+            addresses
+                .v6
+                .contains(&Ipv6Addr::from_str(ip_addr5).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
     }
-
 
     #[test]
     fn test_from_some_of_each_record_set() {
@@ -184,29 +266,48 @@ mod tests {
         let ip_addr6_1 = "::3";
 
         let empty = Route53AddressRecords {
-            v4: Some(ResourceRecordSet::builder()
-                .name("example.com")
-                .r#type(RrType::A)
-                .resource_records(ResourceRecord::builder().value(ip_addr4_1).build().unwrap())
-                .resource_records(ResourceRecord::builder().value(ip_addr4_2).build().unwrap())
-                .build()
-                .unwrap()
+            v4: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::A)
+                    .resource_records(ResourceRecord::builder().value(ip_addr4_1).build().unwrap())
+                    .resource_records(ResourceRecord::builder().value(ip_addr4_2).build().unwrap())
+                    .build()
+                    .unwrap(),
             ),
-            v6: Some(ResourceRecordSet::builder()
-                .name("example.com")
-                .r#type(RrType::Aaaa)
-                .resource_records(ResourceRecord::builder().value(ip_addr6_1).build().unwrap())
-                .build()
-                .unwrap()
-            )
+            v6: Some(
+                ResourceRecordSet::builder()
+                    .name("example.com")
+                    .r#type(RrType::Aaaa)
+                    .resource_records(ResourceRecord::builder().value(ip_addr6_1).build().unwrap())
+                    .build()
+                    .unwrap(),
+            ),
         };
         let addresses = Addresses::from(&empty);
         assert_eq!(addresses.v4.len(), 2, "{:?}", addresses.v4);
         assert_eq!(addresses.v6.len(), 1, "{:?}", addresses.v6);
 
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr4_1).unwrap()), "{:?}", addresses.v4);
-        assert!(addresses.v4.contains(&Ipv4Addr::from_str(ip_addr4_2).unwrap()), "{:?}", addresses.v4);
-        assert!(addresses.v6.contains(&Ipv6Addr::from_str(ip_addr6_1).unwrap()), "{:?}", addresses.v6);
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr4_1).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
+        assert!(
+            addresses
+                .v4
+                .contains(&Ipv4Addr::from_str(ip_addr4_2).unwrap()),
+            "{:?}",
+            addresses.v4
+        );
+        assert!(
+            addresses
+                .v6
+                .contains(&Ipv6Addr::from_str(ip_addr6_1).unwrap()),
+            "{:?}",
+            addresses.v6
+        );
     }
-
 }
