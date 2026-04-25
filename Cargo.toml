@@ -22,7 +22,7 @@ idna = "1.1"
 igd-next = "0.17"
 log = "0.4"
 mime = "0.3"
-netdev = "0.41"
+netdev = "0.42"
 reqwest = { version = "0.13", default-features = false, features = ["http2","stream"] }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["macros","process","rt","time"] }
@@ -37,7 +37,6 @@ native-decode = ["dep:iconv-native"]
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 iconv-native = { version = "0.1", optional = true }
-
 
 
 [target.'cfg(windows)'.dependencies]
