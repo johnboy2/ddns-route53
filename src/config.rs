@@ -274,8 +274,8 @@ struct CommonOptions {
     /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 30 unless
     /// overridden by a configuration file
     #[arg(short='s', long, value_name = "N", value_parser = parse_ranged_number::<FieldUpdatePollInterval>)]
-    #[serde(deserialize_with = "deser_ranged_number::<_, FieldUpdatePollInterval>")]
-    pub update_poll_seconds: Option<f64>,
+    #[serde(alias = "update_poll_seconds", deserialize_with = "deser_ranged_number::<_, FieldUpdatePollInterval>")]
+    pub update_poll_interval_seconds: Option<f64>,
 
     /// Use a specific profile from your (AWS) credential file
     #[arg(short='p', long, value_name = "PROFILE", value_parser = parse_nonempty_string::<FieldAwsProfile>)]
@@ -492,7 +492,7 @@ impl Config {
         );
 
         result.update_poll_interval = Duration::from_secs_f64(
-            *take_first_defined!(update_poll_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
+            *take_first_defined!(update_poll_interval_seconds).unwrap_or(&DEFAULT_UPDATE_POLL_SECS),
         );
 
         result.no_update = cli_args.no_update;
@@ -1009,10 +1009,10 @@ mod tests {
                 );
                 let struct_obj = maybe_struct.unwrap();
                 assert!(
-                    struct_obj.common.update_poll_seconds.is_some(),
+                    struct_obj.common.update_poll_interval_seconds.is_some(),
                     "expect config option is populated"
                 );
-                let struct_value = struct_obj.common.update_poll_seconds.unwrap();
+                let struct_value = struct_obj.common.update_poll_interval_seconds.unwrap();
                 assert_eq!(struct_value, value);
             } else {
                 assert!(maybe_struct.is_err(), "value={value}");
