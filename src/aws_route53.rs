@@ -40,17 +40,28 @@ fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
 }
 
 pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::Result<String> {
+    let mut best_match: Option<String> = None;
+
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
         let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
             if host_is_in_domain(host_name_lowercase, zone.name()) {
-                return Ok(zone.id.to_owned());
+                if best_match
+                    .as_ref()
+                    .is_none_or(|best_zone_id| best_zone_id.len() < zone.id.len())
+                {
+                    best_match = Some(zone.id.to_owned());
+                }
             }
         }
     }
 
-    Err(anyhow!("zone not found: \"{host_name_lowercase}\""))
+    if let Some(best_zone_id) = best_match {
+        Ok(best_zone_id)
+    } else {
+        Err(anyhow!("zone not found for host: \"{host_name_lowercase}\""))
+    }
 }
 
 pub async fn get_resource_records(
