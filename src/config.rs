@@ -690,8 +690,8 @@ fn get_char_representation(ch: char) -> Cow<'static, str> {
         0x0D /* '\r' */ => Cow::Borrowed("'\\r'"),
         0x09 /* '\t' */ => Cow::Borrowed("'\\t'"),
         0x00..0x20 | 0x7F..=0xFF => Cow::Owned(format!("'\\x{0:02X}'", ch_ord)),
-        0x80..=0xFFFF => Cow::Owned(format!("\\u+{0:04X}'", ch_ord)),
-        _ => Cow::Owned(format!("\\U+{0:08X}'", ch_ord))
+        0x80..=0xFFFF => Cow::Owned(format!("'\\u+{0:04X}'", ch_ord)),
+        _ => Cow::Owned(format!("'\\U+{0:08X}'", ch_ord))
     }
 }
 
