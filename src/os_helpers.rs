@@ -160,9 +160,9 @@ pub mod posix {
 
         #[test]
         #[cfg(feature = "native-decode")]
-        fn test_get_encoding_for_code_page() {
-            // We can't reliably predict what code-page the test environment will be configured to use, but we can at least
-            // verify that the function doesn't crash and returns a consistent result.
+        fn test_get_encoding_for_code_set() {
+            // We can't reliably predict what code-set the test environment will be configured to use, but we can at
+            // least verify that the function doesn't crash and returns a consistent result.
 
             let data = "Test data";
             let data_utf8 = data.as_bytes();
