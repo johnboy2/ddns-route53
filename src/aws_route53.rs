@@ -12,7 +12,7 @@ use aws_sdk_route53::types::{
     Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet, RrType,
 };
 use aws_sdk_route53::Client;
-use log::debug;
+use log::{debug, error};
 use tokio::time::{sleep, timeout};
 
 use crate::addresses::{Addresses, Route53AddressRecords};
@@ -110,6 +110,29 @@ pub async fn get_resource_records(
     Ok(Route53AddressRecords { v4, v6 })
 }
 
+pub fn get_ip_addresses_from_resource_record_set<IPTYPE>(rrs: &ResourceRecordSet) -> HashSet<IPTYPE>
+where
+    IPTYPE: FromStr + Ord + Hash
+{
+    rrs
+        .resource_records()
+        .iter()
+        .map(|rr| {
+            match rr.value().parse::<IPTYPE>() {
+                Ok(ip) => Some(ip),
+                Err(_e) => {
+                    error!(
+                        "Route53 resource record value could not be parsed as an IP address: '{}'",
+                        rr.value()
+                    );
+                    None
+                }
+            }
+        })
+        .flatten()
+        .collect::<HashSet<IPTYPE>>()
+}
+
 fn resource_record_set_matches_expected<IPTYPE>(
     rrs: &ResourceRecordSet,
     config: &Config,
@@ -158,16 +181,7 @@ where
         }
     }
 
-    let rrs_ips: HashSet<IPTYPE> = rrs
-        .resource_records()
-        .iter()
-        .map(|rr| {
-            rr.value()
-                .parse::<IPTYPE>()
-                .expect("A/AAAA resource records should always parse as valid IP addresses")
-        })
-        .collect();
-
+    let rrs_ips = get_ip_addresses_from_resource_record_set(rrs);
     if &rrs_ips != desired_addresses {
         debug!("{log_prefix}: IP mismatch");
         return false;

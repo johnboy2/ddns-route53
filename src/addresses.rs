@@ -3,9 +3,10 @@
 use std::collections::HashSet;
 use std::convert::From;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::str::FromStr;
 
 use aws_sdk_route53::types::ResourceRecordSet;
+use crate::aws_route53::get_ip_addresses_from_resource_record_set;
+
 
 #[derive(Debug)]
 pub struct Addresses {
@@ -20,21 +21,19 @@ pub struct Route53AddressRecords {
 
 impl From<&Route53AddressRecords> for Addresses {
     fn from(item: &Route53AddressRecords) -> Self {
-        let mut ipv4addr_set = HashSet::<Ipv4Addr>::new();
-        if let Some(rrs) = item.v4.as_ref() {
-            for rr in rrs.resource_records() {
-                ipv4addr_set
-                    .insert(Ipv4Addr::from_str(rr.value.as_str()).expect("valid IPv4 address"));
-            }
+        let ipv4addr_set = if let Some(rrs) = item.v4.as_ref() {
+            get_ip_addresses_from_resource_record_set::<Ipv4Addr>(rrs)
         }
+        else {
+            HashSet::<Ipv4Addr>::new()
+        };
 
-        let mut ipv6addr_set = HashSet::<Ipv6Addr>::new();
-        if let Some(rrs) = item.v6.as_ref() {
-            for rr in rrs.resource_records() {
-                ipv6addr_set
-                    .insert(Ipv6Addr::from_str(rr.value.as_str()).expect("valid IPv6 address"));
-            }
+        let ipv6addr_set = if let Some(rrs) = item.v6.as_ref() {
+            get_ip_addresses_from_resource_record_set::<Ipv6Addr>(rrs)
         }
+        else {
+            HashSet::<Ipv6Addr>::new()
+        };
 
         Addresses {
             v4: ipv4addr_set,
@@ -46,6 +45,7 @@ impl From<&Route53AddressRecords> for Addresses {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use aws_sdk_route53::types::{ResourceRecord, RrType};
 
     #[test]
