@@ -437,8 +437,6 @@ impl Config {
         let cli = &cli_args.common;
         let file = maybe_file_config.as_ref().map(|args| &args.common);
 
-        // Finish setting up logging (console and/or file)
-
         // This helper macro takes a single option name (without quotes) and checks for it first on the CLI args, then
         // in the config file (if given), and returns the first corresponding value it finds. This allows CLI args to
         // override config file values, while still allowing config files to set various baselines.
@@ -450,6 +448,7 @@ impl Config {
             };
         }
 
+        // Finish setting up logging (console and/or file)
         if let Some(log_file_path) = take_first_defined!(log_file).map(|pb| pb.as_path()) {
             let file_log_dispatcher = match create_file_log_dispatcher(
                 log_file_path,
