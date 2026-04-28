@@ -14,7 +14,7 @@ use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
 use encoding_rs::{DecoderResult, Encoding, WINDOWS_1252};
-use igd_next::{search_gateway, SearchOptions};
+use igd_next::{aio::tokio::search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
 use netdev::{get_default_interface, Interface};
@@ -22,7 +22,6 @@ use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::task::spawn_blocking;
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 
@@ -192,33 +191,27 @@ impl IpAddressV4orV6 for Ipv4Addr {
     }
 
     async fn get_igd_public_ip(timeout: &Duration) -> anyhow::Result<Vec<Self>> {
-        let timeout = *timeout; // Make local copy prior to move
-
-        // Spawn this into a thread (since it is blocking code)
-        spawn_blocking(move || {
-            let search_option = SearchOptions {
-                timeout: Some(timeout),
-                ..Default::default()
-            };
-            let gateway =
-                search_gateway(search_option).context("error finding internet gateway")?;
-
-            let ip = gateway
-                .get_external_ip()
-                .context("error parsing external IP from internet gateway")?;
-            if let IpAddr::V4(v4) = ip {
-                if <Ipv4Addr as IpAddressV4orV6>::is_global(&v4) {
-                    return Ok(vec![v4]);
-                } else {
-                    debug!(
-                        "Ignoring address [{}] reported by internet gateway: address is non-global",
-                        v4
-                    );
-                }
+        let search_option = SearchOptions {
+            timeout: Some(*timeout),
+            ..Default::default()
+        };
+        let gateway = search_gateway(search_option).await?;
+        let ip = gateway
+            .get_external_ip()
+            .await
+            .context("error parsing external IP from internet gateway")?;
+        if let IpAddr::V4(v4) = ip {
+            if <Ipv4Addr as IpAddressV4orV6>::is_global(&v4) {
+                return Ok(vec![v4]);
+            } else {
+                debug!(
+                    "Ignoring address [{}] reported by internet gateway: address is non-global",
+                    v4
+                );
+                
             }
-            Ok(Vec::<Ipv4Addr>::new())
-        })
-        .await?
+        }
+        Ok(Vec::<Ipv4Addr>::new())
     }
 }
 
