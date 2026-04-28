@@ -804,9 +804,6 @@ fn decode_bytes_with_encoding_fallback(
 ) -> anyhow::Result<String> {
     const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
 
-    #[cfg(not(all(windows, feature = "native-decode")))]
-    let fallback_encoding = encoding_rs::UTF_8;
-
     if data.is_empty() {
         Ok(String::new())
     } else if let Some(encoding) = configuration_encoding {
@@ -838,18 +835,14 @@ fn decode_bytes_with_encoding_fallback(
         {
             #[cfg(unix)]
             {
-                debug!("No encoding could be detected from plugin output; trying current code set instead");
+                debug!("No encoding could be detected from plugin output; trying current locale (code set) instead");
                 if let Some(active_code_set) = crate::os_helpers::posix::get_active_code_set() {
                     crate::os_helpers::posix::convert_code_set_slice_to_string(
                         active_code_set.as_str(),
                         data,
                     )
                 } else {
-                    debug!(
-                        "No code set found; trying fallback {0} instead",
-                        fallback_encoding.name()
-                    );
-                    decode_bytes_with_encoding(data, fallback_encoding)
+                    crate::os_helpers::posix::convert_c_locale_slice_to_string(data)
                 }
             }
 
@@ -865,6 +858,7 @@ fn decode_bytes_with_encoding_fallback(
 
             #[cfg(not(any(unix, windows)))]
             {
+                let fallback_encoding = encoding_rs::UTF_8;
                 debug!("No encoding could be detected from plugin output, and no native encoding detection available on this platform; trying fallback {0} instead", fallback_encoding.name());
                 decode_bytes_with_encoding(data, fallback_encoding)
             }
@@ -872,11 +866,21 @@ fn decode_bytes_with_encoding_fallback(
 
         #[cfg(not(feature = "native-decode"))]
         {
-            debug!(
-                "No encoding could be detected from plugin output; trying fallback {0} instead",
-                fallback_encoding.name()
-            );
-            decode_bytes_with_encoding(data, fallback_encoding)
+            #[cfg(unix)]
+            {
+                debug!("No encoding could be detected from plugin output; trying C locale instead");
+                crate::os_helpers::posix::convert_c_locale_slice_to_string(data)
+            }
+
+            #[cfg(not(unix))]
+            {
+                let fallback_encoding = encoding_rs::UTF_8;
+                debug!(
+                    "No encoding could be detected from plugin output; trying fallback {0} instead",
+                    fallback_encoding.name()
+                );
+                decode_bytes_with_encoding(data, fallback_encoding)
+            }
         }
     }
 }

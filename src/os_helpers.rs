@@ -15,7 +15,14 @@ pub mod posix {
     pub fn get_active_code_set() -> Option<String> {
         for var_to_try in ["LC_ALL", "LC_CTYPE", "LANG"] {
             if let Some(env_var_value) = std::env::var_os(var_to_try) {
-                if let Some(code_set) = get_code_set_for_env_var_value(&env_var_value) {
+                if env_var_value == OsStr::from_bytes(b"C") {
+                    log::debug!(
+                        "Found env:{var_to_try}='{}'; using POSIX (C) locale",
+                        String::from_utf8_lossy(env_var_value.as_encoded_bytes())
+                    );
+                    return None;
+                }
+                else if let Some(code_set) = get_code_set_for_env_var_value(&env_var_value) {
                     log::debug!(
                         "Found env:{var_to_try}='{}'; using codeset: {}",
                         String::from_utf8_lossy(env_var_value.as_encoded_bytes()),
@@ -68,6 +75,21 @@ pub mod posix {
     ) -> anyhow::Result<String> {
         iconv_native::decode(input, code_set)
             .map_err(|e| anyhow!("Decoding error for code-set '{code_set}': {e}"))
+    }
+
+    pub fn convert_c_locale_slice_to_string(data: &[u8]) -> anyhow::Result<String> {
+        // First verify no unexpected bytes
+        for (idx, ch) in data.iter().enumerate() {
+            if ch & 0x80u8 != 0 {
+                return Err(anyhow!(
+                    "Decoding error for C locale: byte 0x{:02X} at offset {} is outside acceptable range (0x00-0x7F)",
+                    ch, idx
+                ));
+            }
+        }
+
+        // Since UTF8 is 100% backwards compatible with 7-bit ASCII, we can safely re-use that decoder.
+        Ok(unsafe { str::from_utf8_unchecked(data) }.to_string())
     }
 
     pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
