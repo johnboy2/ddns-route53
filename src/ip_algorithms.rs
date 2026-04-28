@@ -293,22 +293,6 @@ impl IpAddressV4orV6 for Ipv6Addr {
     }
 }
 
-// This helper ensures AlgorithmSpecification objects are serialized as inline tables (similar to JSON objects),
-// rather (INI-style) tables. This is intended for readability of trace output.
-// fn serialize_as_toml_value<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-// where
-//     S: Serializer,
-//     T: Serialize,
-//     //<S as Serializer>::Error: From<toml::ser::Error>
-// {
-//     use serde::ser::Error;
-
-//     let mut buffer = String::with_capacity(256);
-//     let ser = toml::ser::ValueSerializer::new(&mut buffer);
-//     value.serialize(ser).map_err(S::Error::custom)?;
-//     serializer.serialize_str(buffer.as_str())
-// }
-
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum AlgorithmSpecification {
