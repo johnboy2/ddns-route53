@@ -1033,15 +1033,6 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_deserialize_encoding_none() {
-    //     let toml_value: &str = "{}";
-    //     let maybe_struct = toml::from_str::<SerdeEncoding>(toml_value);
-    //     assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-    //     let result = maybe_struct.unwrap();
-    //     assert_eq!(result.encoding, None, "{:?}", toml_value);
-    // }
-
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeUrl {
         #[serde(with = "serde_url")]
