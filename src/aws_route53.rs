@@ -112,7 +112,7 @@ pub async fn get_resource_records(
 
 pub fn get_ip_addresses_from_resource_record_set<IPTYPE>(rrs: &ResourceRecordSet) -> HashSet<IPTYPE>
 where
-    IPTYPE: FromStr + Ord + Hash
+    IPTYPE: FromStr + Ord + Hash,
 {
     rrs
         .resource_records()

@@ -274,7 +274,10 @@ struct CommonOptions {
     /// The timeout to use when trying to update the applicable Route53 resource record(s). Defaults to 30 unless
     /// overridden by a configuration file
     #[arg(short='s', long, value_name = "N", value_parser = parse_ranged_number::<FieldUpdatePollInterval>)]
-    #[serde(alias = "update_poll_seconds", deserialize_with = "deser_ranged_number::<_, FieldUpdatePollInterval>")]
+    #[serde(
+        alias = "update_poll_seconds",
+        deserialize_with = "deser_ranged_number::<_, FieldUpdatePollInterval>"
+    )]
     pub update_poll_interval_seconds: Option<f64>,
 
     /// Use a specific profile from your (AWS) credential file
@@ -606,11 +609,10 @@ fn create_file_log_dispatcher(
         })
         .level_for(env!("CARGO_CRATE_NAME"), *level)
         .level(*level_other)
-        .chain(
-            fern::log_file(file_path)
-            .context(format!("Failed to open log file: {}", file_path.to_string_lossy()))?
-        )
-    )
+        .chain(fern::log_file(file_path).context(format!(
+            "Failed to open log file: {}",
+            file_path.to_string_lossy()
+        ))?))
 }
 
 fn find_configuration_file(
@@ -667,7 +669,10 @@ fn find_configuration_file(
         for candidate_dir in [
             crate::os_helpers::windows::get_user_local_app_data_folder()?, // E.g., "C:\Users\John.Doe\AppData\Local"
             crate::os_helpers::windows::get_program_data_folder()?,        // E.g., "C:\ProgramData"
-        ].into_iter().flatten() {
+        ]
+        .into_iter()
+        .flatten()
+        {
             let candidate = candidate_dir.join("ddns-route53.conf");
             if candidate.is_file() {
                 return Ok(Some(Cow::Owned(candidate)));

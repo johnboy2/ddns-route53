@@ -21,8 +21,7 @@ pub mod posix {
                         String::from_utf8_lossy(env_var_value.as_encoded_bytes())
                     );
                     return None;
-                }
-                else if let Some(code_set) = get_code_set_for_env_var_value(&env_var_value) {
+                } else if let Some(code_set) = get_code_set_for_env_var_value(&env_var_value) {
                     log::debug!(
                         "Found env:{var_to_try}='{}'; using codeset: {}",
                         String::from_utf8_lossy(env_var_value.as_encoded_bytes()),

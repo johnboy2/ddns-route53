@@ -175,7 +175,11 @@ impl IpAddressV4orV6 for Ipv4Addr {
             .map_err(anyhow::Error::msg)
             .context("failed to determine default network interface")?;
 
-        let result: Vec::<Self> = default_interface.ipv4.iter().map(|net| net.addr()).collect();
+        let result: Vec<Self> = default_interface
+            .ipv4
+            .iter()
+            .map(|net| net.addr())
+            .collect();
         Ok(result)
     }
 
@@ -189,7 +193,7 @@ impl IpAddressV4orV6 for Ipv4Addr {
             .get_external_ip()
             .await
             .context("error parsing external IP from internet gateway")?;
-        
+
         if let IpAddr::V4(ipv4) = ip {
             return Ok(vec![ipv4]);
         }
@@ -253,7 +257,11 @@ impl IpAddressV4orV6 for Ipv6Addr {
             .map_err(anyhow::Error::msg)
             .context("failed to determine default network interface")?;
 
-        let result: Vec::<Self> = default_interface.ipv6.iter().map(|net| net.addr()).collect();
+        let result: Vec<Self> = default_interface
+            .ipv6
+            .iter()
+            .map(|net| net.addr())
+            .collect();
         Ok(result)
     }
 
@@ -384,12 +392,11 @@ impl AlgorithmSpecification {
             } => get_plugin_ip::<T>(command, timeout, *encoding).await,
         }?;
 
-        let algo_result_only_globals: Vec<T> =
-            algo_result.iter()
+        let algo_result_only_globals: Vec<T> = algo_result
+            .iter()
             .filter(|ip| (*ip).is_global())
             .map(|ip| *ip)
-            .collect()
-        ;
+            .collect();
         Ok(algo_result_only_globals)
     }
 
@@ -597,7 +604,7 @@ where
         match T::from_str(line) {
             Ok(ip) => {
                 result.push(ip);
-            },
+            }
             Err(e) => {
                 return Err(anyhow!(
                     "failed to parse address from web service: {}",
@@ -807,7 +814,10 @@ fn decode_plugin_output(
             #[cfg(not(any(unix, windows)))]
             {
                 let fallback_encoding = encoding_rs::UTF_8;
-                debug!("No encoding could be detected from plugin output, and no native encoding detection available on this platform; trying fallback {0} instead", fallback_encoding.name());
+                debug!(
+                    "No encoding could be detected from plugin output, and no native encoding detection available on this platform; trying fallback {0} instead",
+                    fallback_encoding.name()
+                );
                 decode_bytes_with_encoding(data, fallback_encoding)
             }
         }
@@ -889,8 +899,7 @@ async fn get_plugin_output(
         .await
         .expect("failed to unwrap stdout buffer content")?;
 
-    let stdout_decoded =
-        decode_plugin_output(stdout_binary.as_slice(), configuration_encoding)?;
+    let stdout_decoded = decode_plugin_output(stdout_binary.as_slice(), configuration_encoding)?;
     trace!("plugin output: {:?}", stdout_decoded.as_str());
     if succeeded {
         Ok(stdout_decoded)
@@ -915,7 +924,7 @@ where
         match T::from_str(line) {
             Ok(ip) => {
                 result.push(ip);
-            },
+            }
             Err(e) => {
                 return Err(anyhow!(
                     "failed to parse IP address from plugin: {}",

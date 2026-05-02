@@ -4,9 +4,8 @@ use std::collections::HashSet;
 use std::convert::From;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use aws_sdk_route53::types::ResourceRecordSet;
 use crate::aws_route53::get_ip_addresses_from_resource_record_set;
-
+use aws_sdk_route53::types::ResourceRecordSet;
 
 #[derive(Debug)]
 pub struct Addresses {
@@ -23,15 +22,13 @@ impl From<&Route53AddressRecords> for Addresses {
     fn from(item: &Route53AddressRecords) -> Self {
         let ipv4addr_set = if let Some(rrs) = item.v4.as_ref() {
             get_ip_addresses_from_resource_record_set::<Ipv4Addr>(rrs)
-        }
-        else {
+        } else {
             HashSet::<Ipv4Addr>::new()
         };
 
         let ipv6addr_set = if let Some(rrs) = item.v6.as_ref() {
             get_ip_addresses_from_resource_record_set::<Ipv6Addr>(rrs)
-        }
-        else {
+        } else {
             HashSet::<Ipv6Addr>::new()
         };
 
@@ -45,8 +42,8 @@ impl From<&Route53AddressRecords> for Addresses {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
     use aws_sdk_route53::types::{ResourceRecord, RrType};
+    use std::str::FromStr;
 
     #[test]
     fn test_from_null_record_set() {
