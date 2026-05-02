@@ -933,6 +933,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use ipnet::{IpAdd, IpSub, Ipv4Net, Ipv6Net};
+
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeDuration {
         #[serde(with = "serde_duration_f64")]
@@ -1063,6 +1065,89 @@ mod tests {
             "{:?}",
             toml_value
         );
+    }
+
+    #[test]
+    fn test_ipv4_is_global() {
+        for (cidr, usage) in [
+            ("10.0.0.0/8", "private range"),
+            ("172.16.0.0/12", "private range"),
+            ("192.168.0.0/16", "private range"),
+            ("100.64.0.0/10", "Carrier-grade NAT"),
+            ("127.0.0.0/8", "loopback"),
+            ("169.254.0.0/16", "APIPA"),
+            ("192.0.0.0/24", "IETF protocols"),
+            ("192.0.2.0/24", "TEST-NET1"),
+            ("198.18.0.0/15", "Benchmark testing"),
+        ] {
+            let net = Ipv4Net::from_str(cidr).unwrap();
+
+            assert!(
+                !IpAddressV4orV6::is_global(&net.addr()),
+                "{}: expect non_global: {usage}",
+                net.addr()
+            );
+            assert!(
+                !IpAddressV4orV6::is_global(&net.broadcast()),
+                "{}: expect non_global: {usage}",
+                net.broadcast()
+            );
+
+            // The following assumes none of the non-global ranges directly butt up against another.
+            let before_base = net.addr().saturating_sub(1);
+            assert!(
+                IpAddressV4orV6::is_global(&before_base),
+                "{}: expect global: (before) {usage}",
+                before_base
+            );
+
+            let after_broadcast = net.broadcast().saturating_add(1);
+            assert!(
+                IpAddressV4orV6::is_global(&after_broadcast),
+                "{}: expect global: (after) {usage}",
+                after_broadcast
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipv6_is_global() {
+        for (cidr, usage, check_before_after) in [
+            ("fe80::/10", "link-local", true),
+            ("fc00::/7", "unique local addresses", true),
+            ("::1/128", "loopback", false),
+            ("::/128", "unspecified (all zeroes)", false),
+        ] {
+            let net = Ipv6Net::from_str(cidr).unwrap();
+
+            assert!(
+                !IpAddressV4orV6::is_global(&net.addr()),
+                "{}: expect non_global: {usage}",
+                net.addr()
+            );
+            assert!(
+                !IpAddressV4orV6::is_global(&net.broadcast()),
+                "{}: expect non_global: {usage}",
+                net.broadcast()
+            );
+
+            if check_before_after {
+                // The following assumes none of the non-global ranges directly butt up against another.
+                let before_base = net.addr().saturating_sub(1);
+                assert!(
+                    IpAddressV4orV6::is_global(&before_base),
+                    "{}: expect global: (before) {usage}",
+                    before_base
+                );
+
+                let after_broadcast = net.broadcast().saturating_add(1);
+                assert!(
+                    IpAddressV4orV6::is_global(&after_broadcast),
+                    "{}: expect global: (after) {usage}",
+                    after_broadcast
+                );
+            }
+        }
     }
 
     #[test]
