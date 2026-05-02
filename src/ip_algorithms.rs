@@ -746,7 +746,7 @@ fn decode_bytes_with_encoding(data: &[u8], encoding: &'static Encoding) -> anyho
     }
 }
 
-fn decode_bytes_with_encoding_fallback(
+fn decode_plugin_output(
     data: &[u8],
     configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
@@ -890,7 +890,7 @@ async fn get_plugin_output(
         .expect("failed to unwrap stdout buffer content")?;
 
     let stdout_decoded =
-        decode_bytes_with_encoding_fallback(stdout_binary.as_slice(), configuration_encoding)?;
+        decode_plugin_output(stdout_binary.as_slice(), configuration_encoding)?;
     trace!("plugin output: {:?}", stdout_decoded.as_str());
     if succeeded {
         Ok(stdout_decoded)
