@@ -175,18 +175,7 @@ impl IpAddressV4orV6 for Ipv4Addr {
             .map_err(anyhow::Error::msg)
             .context("failed to determine default network interface")?;
 
-        let mut result = Vec::<Self>::new();
-        for network in &default_interface.ipv4 {
-            let ip_net_addr = network.addr();
-            if IpAddressV4orV6::is_global(&ip_net_addr) {
-                result.push(ip_net_addr);
-            } else {
-                debug!(
-                    "Ignoring address [{}] on default interface: address is non-global",
-                    ip_net_addr
-                );
-            }
-        }
+        let result: Vec::<Self> = default_interface.ipv4.iter().map(|net| net.addr()).collect();
         Ok(result)
     }
 
@@ -200,16 +189,9 @@ impl IpAddressV4orV6 for Ipv4Addr {
             .get_external_ip()
             .await
             .context("error parsing external IP from internet gateway")?;
-        if let IpAddr::V4(v4) = ip {
-            if <Ipv4Addr as IpAddressV4orV6>::is_global(&v4) {
-                return Ok(vec![v4]);
-            } else {
-                debug!(
-                    "Ignoring address [{}] reported by internet gateway: address is non-global",
-                    v4
-                );
-                
-            }
+        
+        if let IpAddr::V4(ipv4) = ip {
+            return Ok(vec![ipv4]);
         }
         Ok(Vec::<Ipv4Addr>::new())
     }
@@ -271,18 +253,7 @@ impl IpAddressV4orV6 for Ipv6Addr {
             .map_err(anyhow::Error::msg)
             .context("failed to determine default network interface")?;
 
-        let mut result = Vec::<Self>::new();
-        for network in &default_interface.ipv6 {
-            let ip_net_addr = network.addr();
-            if IpAddressV4orV6::is_global(&ip_net_addr) {
-                result.push(ip_net_addr);
-            } else {
-                debug!(
-                    "Ignoring address [{}] on default interface: address is non-global",
-                    ip_net_addr
-                );
-            }
-        }
+        let result: Vec::<Self> = default_interface.ipv6.iter().map(|net| net.addr()).collect();
         Ok(result)
     }
 
@@ -393,7 +364,7 @@ impl AlgorithmSpecification {
         T: IpAddressV4orV6,
         <T as FromStr>::Err: Display,
     {
-        match self {
+        let algo_result = match self {
             AlgorithmSpecification::None => {
                 panic!("Unreachable code was somehow reached")
             }
@@ -411,7 +382,15 @@ impl AlgorithmSpecification {
                 timeout,
                 encoding,
             } => get_plugin_ip::<T>(command, timeout, *encoding).await,
-        }
+        }?;
+
+        let algo_result_only_globals: Vec<T> =
+            algo_result.iter()
+            .filter(|ip| (*ip).is_global())
+            .map(|ip| *ip)
+            .collect()
+        ;
+        Ok(algo_result_only_globals)
     }
 
     pub async fn get_public_ip_address_for_algos<T>(algos: &[AlgorithmSpecification]) -> HashSet<T>
@@ -615,8 +594,10 @@ where
     let mut result = Vec::<T>::new();
     for line in body.as_str().lines() {
         trace!("web service result: {:?}", line);
-        let ip = match T::from_str(line) {
-            Ok(result) => result,
+        match T::from_str(line) {
+            Ok(ip) => {
+                result.push(ip);
+            },
             Err(e) => {
                 return Err(anyhow!(
                     "failed to parse address from web service: {}",
@@ -624,16 +605,6 @@ where
                 ))
             }
         };
-
-        if ip.is_global() {
-            result.push(ip)
-        } else {
-            debug!(
-                "Ignoring address [{}] reported by web-service:{}: address is non-global",
-                ip,
-                url.as_str()
-            );
-        }
     }
 
     Ok(result)
@@ -941,8 +912,10 @@ where
 
     let mut result = Vec::<T>::new();
     for line in output.as_str().lines() {
-        let ip = match T::from_str(line) {
-            Ok(result) => result,
+        match T::from_str(line) {
+            Ok(ip) => {
+                result.push(ip);
+            },
             Err(e) => {
                 return Err(anyhow!(
                     "failed to parse IP address from plugin: {}",
@@ -950,12 +923,6 @@ where
                 ))
             }
         };
-
-        if <T as IpAddressV4orV6>::is_global(&ip) {
-            result.push(ip);
-        } else {
-            debug!("Ignoring address [{ip}] reported by plugin: address is non-global");
-        }
     }
 
     Ok(result)
