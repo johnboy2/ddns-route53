@@ -122,7 +122,7 @@ where
                 Ok(ip) => Some(ip),
                 Err(_e) => {
                     error!(
-                        "Route53 resource record value could not be parsed as an IP address: '{}'",
+                        "Route53 resource record value could not be parsed as an IP address: '{}' (ignoring)",
                         rr.value()
                     );
                     None
