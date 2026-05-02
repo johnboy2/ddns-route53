@@ -77,7 +77,7 @@ mod serde_encoding {
 
             // encoding_rs seems not to recognize some common UTF-16 aliases, so we
             // give it a hand here with a few of our own, custom translations.
-            let sb: &[u8] = match sb {
+            let sb: &[u8] = match sb.to_ascii_lowercase().as_slice() {
                 b"utf16" => b"utf-16",
                 b"utf16le" | b"utf-16-le" => b"utf-16le",
                 b"utf16be" | b"utf-16-be" => b"utf-16be",
