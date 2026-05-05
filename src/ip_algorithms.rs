@@ -19,11 +19,11 @@ use igd_next::{aio::tokio::search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
 use netdev::{get_default_interface, Interface};
+use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::time::sleep;
 use tokio_stream::StreamExt;
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
@@ -875,59 +875,85 @@ async fn get_plugin_output(
     timeout: &Duration,
     configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
-    let mut command_obj = build_command_object(command)?;
+    let mut command_obj = CommandWrap::from(build_command_object(command)?);
+    #[cfg(unix)]
+    {
+        command_obj.wrap(process_wrap::tokio::ProcessGroup::leader());
+    }
+    #[cfg(windows)]
+    {
+        command_obj.wrap(process_wrap::tokio::JobObject);
+    }
+    command_obj.wrap(KillOnDrop);
 
     let mut child = command_obj.spawn().expect("plugin failed to start");
-    drop(child.stdin.take());
 
-    let stdout = child.stdout.take().expect("failed to unwrap stdout pipe");
+    drop(child.stdin().take());
+
+    let mut stdout = child.stdout().take().expect("failed to unwrap stdout pipe");
     let read_stdout_fut = tokio::spawn(async move {
-        let mut buff = Vec::new();
-        let _ = stdout
-            .take(MAX_PLUGIN_DOCUMENT_LENGTH)
-            .read_to_end(&mut buff)
-            .await;
-
-        if buff.len() == (MAX_PLUGIN_DOCUMENT_LENGTH as usize) {
-            return Err(anyhow!(
-                "plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"
-            ));
+        let mut buf = [0u8; 4096];
+        let mut stdout_binary = Vec::<u8>::new();
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    stdout_binary.extend_from_slice(&buf[..n]);
+                    if (MAX_PLUGIN_DOCUMENT_LENGTH as usize) < stdout_binary.len() {
+                        return Err(anyhow!(
+                            "plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
         }
-
-        Ok(buff)
+        Ok(stdout_binary)
     });
 
-    let mut error_msg: Option<String> = None;
-    tokio::select! {
-        es = child.wait() => {
-            let child_exit_status = es.expect("failed to unwrap exit status");
-            if let Some(code) = child_exit_status.code() {
-                if code == 0 {
-                    debug!("plugin exitted with RC={code}");
+    let stdout_binary: Vec<u8>;
+    loop {
+        tokio::select! {
+            res = read_stdout_fut => {
+                match res {
+                    Ok(Ok(output)) => { stdout_binary = output; break; },
+                    Ok(Err(e)) => { return Err(anyhow!("plugin error: {e:?}")); },
+                    Err(e) => { return Err(anyhow!("error waiting on plugin reader: {e:?}")); }
                 }
-                else {
-                    error!("plugin exitted with RC={code}");
-                    error_msg = Some(format!("plugin exitted with RC={code}"));
-                }
+            },
+            _ = tokio::time::sleep(*timeout) => {
+                let _ = child.start_kill();
+                drop(child);
+                return Err(anyhow!("plugin timed out"));
             }
-            else {
-                error!("plugin exitted abnormally");
-                error_msg = Some("plugin exitted abnormally".to_string());
-            }
-        }
-        _ = sleep(*timeout) => {
-            drop(read_stdout_fut);
-            child.kill().await.expect("failed to kill child after timeout");
-            return Err(anyhow!("plugin timed out"));
         }
     }
 
-    let stdout_binary = read_stdout_fut
-        .await
-        .expect("failed to unwrap stdout buffer content")?;
+    let exit_status = match child.wait().await {
+        Ok(es) => es,
+        Err(e) => {
+            return Err(anyhow!("error fetching plugin exit status: {e:?}"));
+        }
+    };
+
+    let mut error_msg: Option<String> = None;
+    if let Some(code) = exit_status.code() {
+        if code == 0 {
+            debug!("plugin exitted with RC={code}");
+        } else {
+            error!("plugin exitted with RC={code}");
+            error_msg = Some(format!("plugin exitted with RC={code}"));
+        }
+    } else {
+        error!("plugin exitted abnormally");
+        error_msg = Some("plugin exitted abnormally".to_string());
+    }
 
     let stdout_decoded = decode_plugin_output(stdout_binary.as_slice(), configuration_encoding)?;
     trace!("plugin output: {:?}", stdout_decoded.as_str());
+
     if let Some(error_msg) = error_msg {
         Err(anyhow!(error_msg))
     } else {

@@ -23,6 +23,7 @@ igd-next = { version = "0.17", features = ["aio_tokio"] }
 log = "0.4"
 mime = "0.3"
 netdev = "0.42"
+process-wrap = { version = "9.1", features = ["tokio1"] }
 reqwest = { version = "0.13", default-features = false, features = ["http2","stream"] }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["macros","process","rt","time"] }
