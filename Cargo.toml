@@ -31,6 +31,7 @@ toml = "1.1"
 toml_edit = { version = "0.25", features = ["serde"] }
 
 [dev-dependencies]
+httpmock = "0.8"
 ipnet = "2.12"
 
 [features]

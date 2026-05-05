@@ -2,6 +2,7 @@
 
 use std::cmp::Eq;
 use std::collections::HashSet;
+use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::marker::Send;
@@ -489,8 +490,34 @@ async fn get_web_service_document(
     timeout: &Duration,
     default_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
-    let request = client.get(url.clone()).timeout(*timeout).send();
-    let response = request.await.context("error fetching url")?;
+    let response = match client.get(url.clone()).timeout(*timeout).send().await {
+        Ok(r) => match r.error_for_status() {
+            Ok(r) => r,
+            Err(e) => {
+                return if let Some(code) = e.status() {
+                    Err(anyhow!(
+                        "Error fetching {}: {} {}",
+                        url.to_string(),
+                        code.as_str(),
+                        code.canonical_reason().unwrap_or("")
+                    ))
+                } else {
+                    Err(anyhow!("Error fetching {}: unknown error", url.to_string()))
+                };
+            }
+        },
+        Err(e) => {
+            return if let Some(src) = e.source() {
+                Err(anyhow!("Error fetching {}: {src:?}", url.to_string()))
+            } else {
+                Err(anyhow!(
+                    "Error fetching {}: {}",
+                    url.to_string(),
+                    e.to_string()
+                ))
+            };
+        }
+    };
     let mut content_length: u64 = 0;
 
     if let Some(cl) = response.content_length() {
@@ -942,6 +969,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use httpmock::prelude::*;
     use ipnet::{IpAdd, IpSub, Ipv4Net, Ipv6Net};
 
     #[derive(Deserialize, Serialize, Debug)]
@@ -1151,19 +1179,24 @@ mod tests {
     }
 
     #[test]
-    fn test_get_web_services_document() {
+    fn test_web_services_document_no_charset() {
         let async_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()
             .unwrap();
 
-        let client = (*WEB_CLIENT).as_ref().unwrap();
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
 
-        // TODO: It would be better to use a mock web server here instead of an actual external service;
-        // however, this is still better than nothing, and captive.apple.com is a reasonably stable endpoint
-        // to use for this purpose.
-        let url = "http://captive.apple.com";
+            then.status(200)
+                .header("content-type", "text/html")
+                .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
 
         let tests = [
             None,
@@ -1174,7 +1207,7 @@ mod tests {
             let content = async_runtime
                 .block_on(get_web_service_document(
                     client,
-                    &Url::parse(url).unwrap(),
+                    &Url::parse(url.as_ref()).unwrap(),
                     &Duration::from_secs(30),
                     encoding,
                 ))
@@ -1185,6 +1218,190 @@ mod tests {
                 "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n"
             );
         }
+
+        weg_page_mock.assert_calls(tests.len());
+    }
+
+    #[test]
+    fn test_web_services_document_explicit_charset() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let expected_content =
+            "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n";
+        let expected_content_utf16: Vec<u8> = expected_content
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+
+        let server = MockServer::start();
+        let weg_page_mock_utf8 = server.mock(|when, then| {
+            when.method(GET).path("/utf8");
+            then.status(200)
+                .header("content-type", "text/html; charset=utf8")
+                .body(expected_content);
+        });
+        let weg_page_mock_utf16le = server.mock(|when, then| {
+            when.method(GET).path("/utf16le");
+            then.status(200)
+                .header("content-type", "text/html; charset=utf-16le")
+                .body(expected_content_utf16);
+        });
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let test_paths = ["/utf8", "/utf16le"];
+        for test_path in test_paths {
+            let content = async_runtime
+                .block_on(get_web_service_document(
+                    client,
+                    &Url::parse(server.url(test_path).as_ref()).unwrap(),
+                    &Duration::from_secs(30),
+                    None,
+                ))
+                .unwrap();
+
+            assert_eq!(content, expected_content);
+        }
+
+        weg_page_mock_utf8.assert();
+        weg_page_mock_utf16le.assert();
+    }
+
+    #[test]
+    fn test_web_services_document_timeout() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+
+            then.status(200)
+                .header("content-type", "text/html")
+                .delay(Duration::from_secs(10))
+                .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document(
+            client,
+            &Url::parse(url.as_ref()).unwrap(),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_err(),
+            "expected error; got instead: {:?}",
+            content.unwrap()
+        );
+        let error = content.unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.ends_with("TimedOut"), "msg={msg:?}");
+
+        weg_page_mock.assert();
+    }
+
+    #[test]
+    fn test_web_services_document_not_found() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+
+            then.status(404)
+                .header("content-type", "text/html")
+                .body("<HTML><HEAD><TITLE>404</TITLE></HEAD><BODY>Not found</BODY></HTML>\n");
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document(
+            client,
+            &Url::parse(url.as_ref()).unwrap(),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_err(),
+            "expected error; got instead: {:?}",
+            content.unwrap()
+        );
+        let error = content.unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains(": 404"), "msg={msg:?}");
+
+        weg_page_mock.assert();
+    }
+
+    #[test]
+    fn test_web_services_document_too_long() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        // This is a whimsical construction that should exceed our maximum document size.
+        let response_data = {
+            let prefix = b"A whole lot of whitespace follows!\n";
+            let suffix = b"That was A LOT of whitespace!\n";
+            let data_len = MAX_WEB_SERVICE_DOCUMENT_LENGTH as usize + prefix.len() + suffix.len();
+            let mut data = vec![0x20u8; data_len];
+
+            data[0..(prefix.len())].copy_from_slice(prefix);
+            data[(data_len - suffix.len())..].copy_from_slice(suffix);
+            data
+        };
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+
+            then.status(200)
+                .header("content-type", "text/html")
+                .body(response_data);
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document(
+            client,
+            &Url::parse(url.as_ref()).unwrap(),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_err(),
+            "expected error; got instead: {:?}",
+            content.unwrap()
+        );
+        let error = content.unwrap_err();
+        let msg = error.to_string();
+        assert!(
+            msg.contains("Content-Length") && msg.contains(") too long (max="),
+            "msg={msg:?}"
+        );
+
+        weg_page_mock.assert();
     }
 
     #[test]
