@@ -897,7 +897,7 @@ async fn get_plugin_output(
         Ok(buff)
     });
 
-    let mut succeeded = true;
+    let mut error_msg: Option<String> = None;
     tokio::select! {
         es = child.wait() => {
             let child_exit_status = es.expect("failed to unwrap exit status");
@@ -907,12 +907,12 @@ async fn get_plugin_output(
                 }
                 else {
                     error!("plugin exitted with RC={code}");
-                    succeeded = false;
+                    error_msg = Some(format!("plugin exitted with RC={code}"));
                 }
             }
             else {
                 error!("plugin exitted abnormally");
-                succeeded = false;
+                error_msg = Some("plugin exitted abnormally".to_string());
             }
         }
         _ = sleep(*timeout) => {
@@ -928,10 +928,10 @@ async fn get_plugin_output(
 
     let stdout_decoded = decode_plugin_output(stdout_binary.as_slice(), configuration_encoding)?;
     trace!("plugin output: {:?}", stdout_decoded.as_str());
-    if succeeded {
-        Ok(stdout_decoded)
+    if let Some(error_msg) = error_msg {
+        Err(anyhow!(error_msg))
     } else {
-        Err(anyhow!("plugin failed"))
+        Ok(stdout_decoded)
     }
 }
 
@@ -1405,7 +1405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_plugin_output() {
+    fn test_plugin_output_no_encoding() {
         let async_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
@@ -1424,6 +1424,92 @@ mod tests {
         let content_rstripped = content.trim_end_matches(&['\r', '\n'][..]);
 
         assert_eq!(content_rstripped, "Hello!");
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn test_plugin_output_utf16() {
+        let encoding = encoding_rs::UTF_16LE;
+
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let msg = "Hello, world!";
+
+        let command: StringOrStringVec = if cfg!(windows) {
+            StringOrStringVec::Vec(
+                    vec!(
+                        format!(
+                            "{}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                            std::env::var("SystemRoot").unwrap()
+                        ),
+                        "-NoLogo".to_owned(),
+                        "-NoProfile".to_owned(),
+                        "-NonInteractive".to_owned(),
+                        "-WindowStyle".to_owned(), "hidden".to_owned(),
+                        "-Command".to_owned(),
+                        format!("[Console]::OutputEncoding = [System.Text.Encoding]::Unicode; Write-Host '{msg}'")
+                    )
+                )
+        } else if cfg!(unix) {
+            let mut cmd_str = String::with_capacity(msg.len() * 8 + 16);
+
+            cmd_str.push_str("printf '");
+            for code_unit in msg.encode_utf16() {
+                for b in code_unit.to_le_bytes() {
+                    cmd_str.push_str(format!("\\x{b:02X}").as_str());
+                }
+            }
+            cmd_str.push_str("'");
+
+            StringOrStringVec::String(cmd_str)
+        } else {
+            panic!("platform not supported for this test");
+        };
+
+        let content = async_runtime
+            .block_on(get_plugin_output(
+                &command,
+                &Duration::from_secs(10),
+                Some(encoding),
+            ))
+            .unwrap();
+        let content_trimmed = content.trim_end();
+        assert_eq!(content_trimmed, msg);
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn test_plugin_timeout() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let command = if cfg!(windows) {
+            StringOrStringVec::String("timeout /t 10 >NUL && echo Hello!".to_string())
+        } else {
+            StringOrStringVec::String("sleep 10 && echo Hello!".to_string())
+        };
+
+        let result = async_runtime.block_on(get_plugin_output(
+            &command,
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            result.is_err(),
+            "expected error; got: {:?}",
+            result.unwrap()
+        );
+        let error = result.unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains("plugin timed out"), "msg={msg:?}");
     }
 
     #[test]
