@@ -85,7 +85,7 @@ async fn main() {
         let config = config_builder.build();
         let r53 = aws_sdk_route53::Client::from_conf(config);
         trace!(
-            "SDK configuration loading {:.2} seconds",
+            "SDK configuration loading took {:.2} seconds",
             time.elapsed().as_secs_f32()
         );
         r53
@@ -105,7 +105,7 @@ async fn main() {
                         get_zone_id(rc_r53.as_ref(), arc_config.host_name_normalized.as_str())
                             .await;
                     trace!(
-                        "SDK configuration loading {:.2} seconds",
+                        "Dynamic zone ID lookup took {:.2} seconds",
                         time.elapsed().as_secs_f32()
                     );
                     zone_id
