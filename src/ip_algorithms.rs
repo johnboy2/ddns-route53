@@ -14,7 +14,8 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{DecoderResult, Encoding, WINDOWS_1252};
+use encoding_rs::mem::decode_latin1;
+use encoding_rs::{DecoderResult, Encoding};
 use igd_next::{aio::tokio::search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
@@ -551,7 +552,7 @@ async fn get_web_service_document(
 
     let encoding = if let Some(name) = encoding_name {
         match Encoding::for_label(name.as_bytes()) {
-            Some(e) => e,
+            Some(e) => Some(e),
             None => {
                 return Err(anyhow!("unknown encoding: \"{name}\""))?;
             }
@@ -564,13 +565,12 @@ async fn get_web_service_document(
                     "Using configuration-provided default_encoding: {}",
                     e.name()
                 );
-                e
             }
             None => {
                 debug!("Using HTTP default encoding: iso-8859-1");
-                WINDOWS_1252
             }
         }
+        default_encoding
     };
 
     let mut body_binary = Vec::<u8>::new();
@@ -592,21 +592,27 @@ async fn get_web_service_document(
         body_binary.extend_from_slice(item.as_ref());
     }
 
-    match encoding
-        .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
-        .map(|s| s.into_owned())
-    {
-        Some(decoded) => Ok(decoded),
-        None => {
-            error!(
-                "web-service response could not be decoded; value: {:X?}",
-                body_binary.as_slice()
-            );
-            Err(anyhow!(
-                "failed to decode output with \"{}\"",
-                encoding.name()
-            ))
+    if let Some(encoding) = encoding {
+        match encoding
+            .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
+            .map(|s| s.into_owned())
+        {
+            Some(decoded) => Ok(decoded),
+            None => {
+                error!(
+                    "web-service response could not be decoded; value: {:X?}",
+                    body_binary.as_slice()
+                );
+                Err(anyhow!(
+                    "failed to decode output with \"{}\"",
+                    encoding.name()
+                ))
+            }
         }
+    } else {
+        // Use the HTTP default (ISO 8859-1). Since every possible byte is translated one-for-one to a code-point,
+        // there is no possibility of failure here -- other than possibly for memory exhaustion if it allocates.
+        Ok(decode_latin1(body_binary.as_slice()).to_string())
     }
 }
 
