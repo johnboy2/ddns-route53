@@ -41,7 +41,8 @@ async fn main() {
     debug!("Using config file: {:?}", &config.config_file_path);
     trace!(
         "Configuration:\n{}",
-        toml_edit::ser::to_string(&config).unwrap()
+        toml_edit::ser::to_string(&config)
+            .expect("TOML-serialization of in-memory config should always succeed")
     );
 
     let arc_config = Rc::new(config);
@@ -110,9 +111,12 @@ async fn main() {
                     zone_id
                 })
                 .await
-                .expect("future-join should not panic")
             {
-                Ok(zone_id) => zone_id,
+                Ok(Ok(zone_id)) => zone_id,
+                Ok(Err(e)) => {
+                    error!("{:#}", e);
+                    return;
+                }
                 Err(e) => {
                     error!("{:#}", e);
                     return;

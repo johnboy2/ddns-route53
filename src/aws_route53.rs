@@ -321,7 +321,7 @@ pub async fn update_host_addresses_if_different(
     let start_time = Instant::now();
     let expiry_time = start_time
         .checked_add(config.update_timeout.to_owned())
-        .expect("adding a duration to 'now' should always work");
+        .ok_or(anyhow!("Could not set timeout expiry (update_timeout is too large)"))?;
 
     let cb = ChangeBatch::builder()
         .set_changes(Some(changes))
@@ -337,9 +337,11 @@ pub async fn update_host_addresses_if_different(
     let timeout_output = timeout_fut.await?;
     let change_output = timeout_output?;
 
-    let mut ci = change_output
+    let mut ci =
+        change_output
         .change_info
-        .expect("Change-responses should include change-info");
+        .ok_or(anyhow!("ChangeResourceRecordSets response unexpected lacks ChangeInfo field"))?;
+
     while ci.status != ChangeStatus::Insync {
         debug!("Change is not yet synchronized.");
         let now = Instant::now();
@@ -358,10 +360,12 @@ pub async fn update_host_addresses_if_different(
             .send()
             .await
             .context("error calling Route53:GetChange")?;
+
         ci = output
             .change_info
-            .expect("Change-lookups should return change-info")
+            .ok_or(anyhow!("GetChange route53 response unexpectedly lacks change-info"))?
     }
+    debug!("Route53 now reports that the change has been synchronized.");
 
     Ok(UpdateHostResult::UpdateSuccessful)
 }

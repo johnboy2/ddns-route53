@@ -886,11 +886,14 @@ async fn get_plugin_output(
     }
     command_obj.wrap(KillOnDrop);
 
-    let mut child = command_obj.spawn().expect("plugin failed to start");
+    let mut child = command_obj.spawn().context("plugin failed to start")?;
 
     drop(child.stdin().take());
 
-    let mut stdout = child.stdout().take().expect("failed to unwrap stdout pipe");
+    let mut stdout = child
+        .stdout()
+        .take()
+        .ok_or(anyhow!("Could not get plugin stdout"))?;
     let read_stdout_fut = tokio::spawn(async move {
         let mut buf = [0u8; 4096];
         let mut stdout_binary = Vec::<u8>::new();
