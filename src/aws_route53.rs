@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: [MIT] OR [Apache-2.0]
 
+use std::borrow::Cow;
 use std::cmp::{min, Ord};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display};
@@ -18,18 +19,44 @@ use tokio::time::{sleep, timeout};
 use crate::addresses::{Addresses, Route53AddressRecords};
 use crate::config::Config;
 
-fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
-    let domain_lowercase = domain.to_lowercase();
+fn normalize_host_name(host_name: &str) -> Cow<'_, str> {
+    if host_name.ends_with('.') {
+        let first_uppercase_idx = host_name
+            .bytes()
+            .position(|b| b.is_ascii_alphabetic() && !b.is_ascii_lowercase());
+        if let Some(first_uppercase_idx) = first_uppercase_idx {
+            let mut result = String::with_capacity(host_name.len());
+            result.push_str(&host_name[..first_uppercase_idx]);
+            for b in host_name[first_uppercase_idx..].chars() {
+                result.push(b.to_ascii_lowercase())
+            }
+            Cow::Owned(result)
+        } else {
+            Cow::Borrowed(host_name)
+        }
+    } else {
+        let mut result = String::with_capacity(host_name.len() + 1);
+        for ch in host_name.chars() {
+            result.push(ch.to_ascii_lowercase());
+        }
+        result.push('.');
+        Cow::Owned(result)
+    }
+}
 
-    if host_lowercase == domain_lowercase {
+fn host_is_in_domain(host_fqdn: &str, domain: &str) -> bool {
+    let host_fqdn_normalized = normalize_host_name(host_fqdn);
+    let domain_normalized = normalize_host_name(domain);
+
+    if host_fqdn_normalized == domain_normalized {
         return true;
     }
-    if host_lowercase.ends_with(domain_lowercase.as_str()) {
+    if host_fqdn_normalized.ends_with(domain_normalized.as_ref()) {
         // While this would match "host.domain.com" in "domain.com" (which we want),
         // it would also match "mydomain.com" against "domain.com" (which we don't want).
         // So we must check that a dot ('.') immediately precedes the domain portion.
-        let host_lc_bytes = host_lowercase.as_bytes();
-        let domain_lc_bytes = domain_lowercase.as_bytes();
+        let host_lc_bytes = host_fqdn_normalized.as_bytes();
+        let domain_lc_bytes = domain_normalized.as_bytes();
         let maybe_separator = host_lc_bytes[host_lc_bytes.len() - domain_lc_bytes.len() - 1];
         if maybe_separator == b'.' {
             return true;
@@ -60,7 +87,9 @@ pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::
     if let Some(best_zone_id) = best_match {
         Ok(best_zone_id)
     } else {
-        Err(anyhow!("zone not found for host: \"{host_name_lowercase}\""))
+        Err(anyhow!(
+            "zone not found for host: \"{host_name_lowercase}\""
+        ))
     }
 }
 
