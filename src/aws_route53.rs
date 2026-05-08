@@ -21,10 +21,12 @@ use crate::config::Config;
 
 fn normalize_host_name(host_name: &str) -> Cow<'_, str> {
     if host_name.ends_with('.') {
+        // Odds are this is already lower-case; but we check to be sure.
         let first_uppercase_idx = host_name
             .bytes()
             .position(|b| b.is_ascii_alphabetic() && !b.is_ascii_lowercase());
         if let Some(first_uppercase_idx) = first_uppercase_idx {
+            // Found an upper-case letter; convert everything to lower-case.
             let mut result = String::with_capacity(host_name.len());
             result.push_str(&host_name[..first_uppercase_idx]);
             for b in host_name[first_uppercase_idx..].chars() {
@@ -32,9 +34,12 @@ fn normalize_host_name(host_name: &str) -> Cow<'_, str> {
             }
             Cow::Owned(result)
         } else {
+            // It's all lower-case; we can return it as-is.
             Cow::Borrowed(host_name)
         }
     } else {
+        // Since the terminal '.' is missing, we have to create a new string anyway.
+        // So we might as well re-case everything while we're at it.
         let mut result = String::with_capacity(host_name.len() + 1);
         for ch in host_name.chars() {
             result.push(ch.to_ascii_lowercase());
@@ -66,7 +71,8 @@ fn host_is_in_domain(host_fqdn: &str, domain: &str) -> bool {
     false
 }
 
-pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::Result<String> {
+// Helper to look up the zone ID for a given host name (i.e., if not provided by configuration or CLI arg).
+pub async fn get_zone_id(client: &Client, host_name: &str) -> anyhow::Result<String> {
     let mut best_match: Option<String> = None;
 
     let mut stream = client.list_hosted_zones().into_paginator().send();
@@ -92,9 +98,7 @@ pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::
     if let Some(best_zone_id) = best_match {
         Ok(best_zone_id)
     } else {
-        Err(anyhow!(
-            "zone not found for host: \"{host_name_lowercase}\""
-        ))
+        Err(anyhow!("zone not found for host: \"{host_name}\""))
     }
 }
 
@@ -146,12 +150,12 @@ pub async fn get_resource_records(
 
 pub fn get_ip_addresses_from_resource_record_set<IPTYPE>(rrs: &ResourceRecordSet) -> HashSet<IPTYPE>
 where
-    IPTYPE: FromStr + Ord + Hash,
+    IPTYPE: FromStr + Ord + Hash + Eq,
 {
     rrs
         .resource_records()
         .iter()
-        .map(|rr| {
+        .filter_map(|rr| {
             match rr.value().parse::<IPTYPE>() {
                 Ok(ip) => Some(ip),
                 Err(_e) => {
@@ -163,7 +167,6 @@ where
                 }
             }
         })
-        .flatten()
         .collect::<HashSet<IPTYPE>>()
 }
 
@@ -300,6 +303,7 @@ pub async fn update_host_addresses_if_different(
     desired_addresses: &Addresses,
     current_address_records: &Route53AddressRecords,
 ) -> anyhow::Result<UpdateHostResult> {
+    // Build up the set of changes required (if any).
     let changes = {
         let mut changes = Vec::<Change>::new();
         _compare_add_to_change_set(
@@ -323,35 +327,44 @@ pub async fn update_host_addresses_if_different(
         changes
     };
 
+    // Early exit opportunity
     if changes.is_empty() {
         return Ok(UpdateHostResult::NotRequired);
     } else if config.no_update {
         return Ok(UpdateHostResult::UpdateSkipped);
     }
+
+    // Submit the change request
     let start_time = Instant::now();
     let expiry_time = start_time
         .checked_add(config.update_timeout.to_owned())
-        .ok_or(anyhow!("Could not set timeout expiry (update_timeout is too large)"))?;
+        .ok_or(anyhow!(
+            "Could not set timeout expiry (update_timeout is too large)"
+        ))?;
 
     let cb = ChangeBatch::builder()
         .set_changes(Some(changes))
         .build()
-        .context("error builing Route53:ChangeBatch object")?;
+        .context("error building Route53:ChangeBatch object")?;
     let change_fut = r53
         .change_resource_record_sets()
         .set_change_batch(Some(cb))
         .set_hosted_zone_id(config.route53_zone_id.to_owned())
         .send();
+
+    // Await response to the change request
     let timeout_fut = timeout(config.update_timeout.to_owned(), change_fut);
+    let response = match timeout_fut.await {
+        Ok(r) => r,
+        Err(_) => {
+            return Err(anyhow!("timed out waiting for change submission response"));
+        }
+    };
+    let mut ci = response?.change_info.ok_or(anyhow!(
+        "ChangeResourceRecordSets response unexpectedly lacks ChangeInfo field"
+    ))?;
 
-    let timeout_output = timeout_fut.await?;
-    let change_output = timeout_output?;
-
-    let mut ci =
-        change_output
-        .change_info
-        .ok_or(anyhow!("ChangeResourceRecordSets response unexpected lacks ChangeInfo field"))?;
-
+    // Wait for the change(s) to be synchronized with Route53
     while ci.status != ChangeStatus::Insync {
         debug!("Change is not yet synchronized.");
         let now = Instant::now();
@@ -371,9 +384,9 @@ pub async fn update_host_addresses_if_different(
             .await
             .context("error calling Route53:GetChange")?;
 
-        ci = output
-            .change_info
-            .ok_or(anyhow!("GetChange route53 response unexpectedly lacks change-info"))?
+        ci = output.change_info.ok_or(anyhow!(
+            "GetChange route53 response unexpectedly lacks ChangeInfo"
+        ))?
     }
     debug!("Route53 now reports that the change has been synchronized.");
 

@@ -10,7 +10,6 @@ pub mod posix {
     use anyhow::anyhow;
     use libc::{geteuid, getpwuid_r, strerror};
 
-    #[inline]
     #[cfg(feature = "native-decode")]
     pub fn get_active_code_set() -> Option<String> {
         for var_to_try in ["LC_ALL", "LC_CTYPE", "LANG"] {
@@ -38,6 +37,7 @@ pub mod posix {
         None
     }
 
+    #[inline]
     #[cfg(feature = "native-decode")]
     pub fn get_code_set_for_env_var_value<'a>(
         env_var_value: &'a OsStr,
@@ -48,11 +48,11 @@ pub mod posix {
         if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
             // Find the encoding (which may be terminated by an '@' modifier)
             let start_offset = start_offset + 1;
-            let codeset_name = if let Some(length) = os_value_bytes[start_offset..]
+            let codeset_name = if let Some(codeset_length) = os_value_bytes[start_offset..]
                 .iter()
                 .position(|b| *b == b'@')
             {
-                &os_value_bytes[start_offset..(start_offset + length)]
+                &os_value_bytes[start_offset..(start_offset + codeset_length)]
             } else {
                 &os_value_bytes[start_offset..]
             };
@@ -92,9 +92,11 @@ pub mod posix {
     }
 
     pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
+        const PASSWD_ENTRY_BUFFER_SIZE: usize = 16384;
+
         let uid = unsafe { geteuid() };
 
-        let mut passwd_entry_buffer = [0i8; 16374];
+        let mut passwd_entry_buffer = [0i8; PASSWD_ENTRY_BUFFER_SIZE];
         let mut passwd_entry = libc::passwd {
             pw_name: null_mut(),
             pw_passwd: null_mut(),
@@ -116,22 +118,17 @@ pub mod posix {
             )
         };
 
-        let result: anyhow::Result<Option<PathBuf>>;
-        if rc == 0 {
-            if getpwuid_result.is_null() {
-                result = Ok(None);
-            } else {
-                let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
-                let home_dir = OsStr::from_bytes(home_dir_cptr.to_bytes());
-                result = Ok(Some(PathBuf::from(home_dir)));
-            }
-        } else {
+        if rc != 0 {
             let error_msg_cptr = unsafe { CStr::from_ptr(strerror(rc)) };
             let error_str = String::from_utf8_lossy(error_msg_cptr.to_bytes());
-            result = Err(anyhow!("{}", error_str));
+            Err(anyhow!("Failed to retrieve user information for UID={}: {}", uid, error_str))
+        } else if !getpwuid_result.is_null() {
+            let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
+            let home_dir = OsStr::from_bytes(home_dir_cptr.to_bytes());
+            Ok(Some(PathBuf::from(home_dir)))
+        } else {
+            Ok(None)
         }
-
-        result
     }
 
     #[cfg(test)]
