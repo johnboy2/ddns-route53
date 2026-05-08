@@ -73,12 +73,17 @@ pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::
     while let Some(page) = stream.next().await {
         let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
-            if host_is_in_domain(host_name_lowercase, zone.name()) {
+            if host_is_in_domain(host_name, zone.name()) {
+                // Route53 returns the zone ID as "/hostedzone/ZONEID", so we strip the prefix for further use.
+                let zone_id = zone
+                    .id
+                    .strip_prefix("/hostedzone/")
+                    .unwrap_or(zone.id.as_str());
                 if best_match
                     .as_ref()
-                    .is_none_or(|best_zone_id| best_zone_id.len() < zone.id.len())
+                    .is_none_or(|best_zone_id| best_zone_id.len() < zone_id.len())
                 {
-                    best_match = Some(zone.id.to_owned());
+                    best_match = Some(zone_id.to_owned());
                 }
             }
         }
