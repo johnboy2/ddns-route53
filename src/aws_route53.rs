@@ -174,7 +174,7 @@ where
 {
     match rrs.ttl {
         Some(ttl) => {
-            if ttl != config.route53_record_ttl as i64 {
+            if ttl != config.route53_record_ttl {
                 debug!(
                     "{log_prefix}: TTL mismatch (want={}, found={ttl})",
                     config.route53_record_ttl
@@ -259,7 +259,7 @@ where
         let rrs = ResourceRecordSet::builder()
             .set_name(Some(config.host_name_normalized.to_owned()))
             .set_type(Some(rr_type))
-            .set_ttl(Some(config.route53_record_ttl as i64))
+            .set_ttl(Some(config.route53_record_ttl))
             .set_resource_records(Some(v))
             .build()
             .context("error building Route53:ResourceRecordSet object")?;
@@ -443,7 +443,7 @@ mod tests {
         let rrs = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64)
+            .ttl(test_config.route53_record_ttl)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])
@@ -481,7 +481,7 @@ mod tests {
         let rrs = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64 + 1)
+            .ttl(test_config.route53_record_ttl + 1)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])
@@ -544,7 +544,7 @@ mod tests {
         let rrs_base = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64)
+            .ttl(test_config.route53_record_ttl)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])
@@ -683,7 +683,7 @@ mod tests {
         let rrs_base = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64)
+            .ttl(test_config.route53_record_ttl)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])

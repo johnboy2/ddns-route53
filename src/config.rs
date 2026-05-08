@@ -376,7 +376,7 @@ pub struct Config {
     pub config_file_path: Option<PathBuf>,
     pub host_name: String,
     pub route53_zone_id: Option<String>,
-    pub route53_record_ttl: i32,
+    pub route53_record_ttl: i64,
 
     #[serde(
         rename = "update_timeout_seconds",
@@ -487,7 +487,7 @@ impl Config {
         result.host_name_normalized = normalize_host_name(result.host_name.as_str())?.to_string();
 
         result.route53_record_ttl =
-            *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL);
+            *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL) as i64;
 
         result.update_timeout = Duration::from_secs_f64(
             *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS),
