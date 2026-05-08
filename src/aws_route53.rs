@@ -191,24 +191,29 @@ where
         }
     };
 
-    for (is_some, name) in [
-        (rrs.alias_target.is_some(), "alias_target"),
-        (rrs.cidr_routing_config.is_some(), "cidr_routing_config"),
-        (rrs.failover.is_some(), "failover"),
-        (rrs.geo_location.is_some(), "geo_location"),
-        (rrs.multi_value_answer.is_some(), "multi_value_answer"),
-        (rrs.region.is_some(), "region"),
-        (rrs.set_identifier.is_some(), "set_identifier"),
-        (
-            rrs.traffic_policy_instance_id.is_some(),
-            "traffic_policy_instance_id",
-        ),
-    ] {
-        if is_some {
-            debug!("{log_prefix}: field is unexpectedly populated: {name}");
-            return false;
-        }
+    macro_rules! check_unexpected_fields {
+        ($rrs:expr, $log_prefix:expr, $( $field:ident ),* $(,)? ) => {
+            $(
+                if $rrs.$field.is_some() {
+                    debug!("{}: field is unexpectedly populated: {}", $log_prefix, stringify!($field));
+                    return false;
+                }
+            )*
+        };
     }
+
+    check_unexpected_fields!(
+        rrs,
+        log_prefix,
+        alias_target,
+        cidr_routing_config,
+        failover,
+        geo_location,
+        multi_value_answer,
+        region,
+        set_identifier,
+        traffic_policy_instance_id,
+    );
 
     let rrs_ips = get_ip_addresses_from_resource_record_set(rrs);
     if &rrs_ips != desired_addresses {
