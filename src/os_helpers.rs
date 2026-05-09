@@ -59,8 +59,10 @@ pub mod posix {
 
             if codeset_name.is_empty() {
                 return None;
+            } else if let Ok(valid_utf8) = std::str::from_utf8(codeset_name) {
+                return Some(std::borrow::Cow::Borrowed(valid_utf8));
             } else {
-                return Some(String::from_utf8_lossy(codeset_name));
+                return Some(std::borrow::Cow::Owned(String::from_utf8_lossy(codeset_name).into_owned()));
             }
         }
 
