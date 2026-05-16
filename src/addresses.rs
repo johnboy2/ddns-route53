@@ -20,17 +20,15 @@ pub struct Route53AddressRecords {
 
 impl From<&Route53AddressRecords> for Addresses {
     fn from(item: &Route53AddressRecords) -> Self {
-        let ipv4addr_set = if let Some(rrs) = item.v4.as_ref() {
-            get_ip_addresses_from_resource_record_set::<Ipv4Addr>(rrs)
-        } else {
-            HashSet::<Ipv4Addr>::new()
-        };
+        let ipv4addr_set = item.v4.as_ref().map_or_else(
+            || HashSet::<Ipv4Addr>::new(),
+            |rrs| get_ip_addresses_from_resource_record_set::<Ipv4Addr>(rrs),
+        );
 
-        let ipv6addr_set = if let Some(rrs) = item.v6.as_ref() {
-            get_ip_addresses_from_resource_record_set::<Ipv6Addr>(rrs)
-        } else {
-            HashSet::<Ipv6Addr>::new()
-        };
+        let ipv6addr_set = item.v6.as_ref().map_or_else(
+            || HashSet::<Ipv6Addr>::new(),
+            |rrs| get_ip_addresses_from_resource_record_set::<Ipv6Addr>(rrs),
+        );
 
         Addresses {
             v4: ipv4addr_set,

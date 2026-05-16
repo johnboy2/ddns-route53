@@ -256,6 +256,8 @@ pub async fn update_host_addresses_if_different(
     // Build up the set of changes required (if any).
     let changes = {
         let mut changes = Vec::<Change>::new();
+
+        // Handle IPv4 addresses
         _compare_add_to_change_set(
             config,
             &desired_addresses.v4,
@@ -265,6 +267,8 @@ pub async fn update_host_addresses_if_different(
             "ipv4",
         )
         .context("error determining ipv4-specific changes")?;
+
+        // Handle IPv6 addresses
         _compare_add_to_change_set(
             config,
             &desired_addresses.v6,
@@ -274,6 +278,7 @@ pub async fn update_host_addresses_if_different(
             "ipv6",
         )
         .context("error determining ipv6-specific changes")?;
+
         changes
     };
 

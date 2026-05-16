@@ -40,6 +40,7 @@ fn serde_default_algo_timeout() -> Duration {
     Duration::from_secs(DEFAULT_ALGO_TIMEOUT_SECS)
 }
 
+// Convert a number of seconds as f64 to/from a duration
 mod serde_duration_f64 {
     use serde::de::Error;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -65,6 +66,7 @@ mod serde_duration_f64 {
     }
 }
 
+// Convert an identifier (string) to/from an encoding
 mod serde_encoding {
     use encoding_rs::Encoding;
     use serde::de::Error;
@@ -132,8 +134,11 @@ mod serde_url {
 
 pub trait IpAddressV4orV6: Copy + Debug + Display + Eq + FromStr + Hash + Send {
     fn is_global(&self) -> bool;
+
     fn type_name() -> &'static str;
+
     async fn get_default_public_ip() -> anyhow::Result<Vec<Self>>;
+
     async fn get_igd_public_ip(timeout: &Duration) -> anyhow::Result<Vec<Self>>;
 }
 
