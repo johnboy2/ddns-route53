@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: [MIT] OR [Apache-2.0]
 
-use std::borrow::Cow;
 use std::cmp::{min, Ord};
 use std::collections::HashSet;
 use std::fmt::{Debug, Display};
@@ -18,68 +17,19 @@ use tokio::time::{sleep, timeout};
 
 use crate::addresses::{Addresses, Route53AddressRecords};
 use crate::config::Config;
-
-fn normalize_host_name(host_name: &str) -> Cow<'_, str> {
-    if host_name.ends_with('.') {
-        // Odds are this is already lower-case; but we check to be sure.
-        let first_uppercase_idx = host_name
-            .bytes()
-            .position(|b| b.is_ascii_alphabetic() && !b.is_ascii_lowercase());
-        if let Some(first_uppercase_idx) = first_uppercase_idx {
-            // Found an upper-case letter; convert everything to lower-case.
-            let mut result = String::with_capacity(host_name.len());
-            result.push_str(&host_name[..first_uppercase_idx]);
-            for b in host_name[first_uppercase_idx..].chars() {
-                result.push(b.to_ascii_lowercase())
-            }
-            Cow::Owned(result)
-        } else {
-            // It's all lower-case; we can return it as-is.
-            Cow::Borrowed(host_name)
-        }
-    } else {
-        // Since the terminal '.' is missing, we have to create a new string anyway.
-        // So we might as well re-case everything while we're at it.
-        let mut result = String::with_capacity(host_name.len() + 1);
-        for ch in host_name.chars() {
-            result.push(ch.to_ascii_lowercase());
-        }
-        result.push('.');
-        Cow::Owned(result)
-    }
-}
-
-fn host_is_in_domain(host_fqdn: &str, domain: &str) -> bool {
-    let host_fqdn_normalized = normalize_host_name(host_fqdn);
-    let domain_normalized = normalize_host_name(domain);
-
-    if host_fqdn_normalized == domain_normalized {
-        return true;
-    }
-    if host_fqdn_normalized.ends_with(domain_normalized.as_ref()) {
-        // While this would match "host.domain.com" in "domain.com" (which we want),
-        // it would also match "mydomain.com" against "domain.com" (which we don't want).
-        // So we must check that a dot ('.') immediately precedes the domain portion.
-        let host_lc_bytes = host_fqdn_normalized.as_bytes();
-        let domain_lc_bytes = domain_normalized.as_bytes();
-        let maybe_separator = host_lc_bytes[host_lc_bytes.len() - domain_lc_bytes.len() - 1];
-        if maybe_separator == b'.' {
-            return true;
-        }
-    }
-
-    false
-}
+use crate::host_names::{host_is_in_domain, normalize_host_name};
 
 // Helper to look up the zone ID for a given host name (i.e., if not provided by configuration or CLI arg).
 pub async fn get_zone_id(client: &Client, host_name: &str) -> anyhow::Result<String> {
+    let host_name_normalized = normalize_host_name(host_name)?;
+
     let mut best_match: Option<String> = None;
 
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
         let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
-            if host_is_in_domain(host_name, zone.name()) {
+            if host_is_in_domain(host_name_normalized.as_ref(), zone.name()) {
                 // Route53 returns the zone ID as "/hostedzone/ZONEID", so we strip the prefix for further use.
                 let zone_id = zone
                     .id
@@ -411,47 +361,6 @@ mod tests {
         route53_record_ttl: 60,
         ..Default::default()
     });
-
-    #[test]
-    fn test_host_in_domain() {
-        let tests = [
-            ("example.com", "example.com"),
-            ("example.com", "com"),
-            ("www.example.com", "com"),
-            ("a.b.c.d.e.example.com", "example.com"),
-            ("www.example.com", "example.com"),
-            ("example.com", "EXAMPLE.COM"),
-            ("example.com", "COM"),
-            ("www.example.com", "COM"),
-            ("www.example.com", "EXAMPLE.COM"),
-        ];
-        for (hostname, domain) in tests {
-            assert!(
-                host_is_in_domain(hostname, domain),
-                "host=\"{0}\", domain=\"{1}\"",
-                hostname,
-                domain
-            );
-        }
-    }
-
-    #[test]
-    fn test_host_not_in_domain() {
-        let tests = [
-            ("com", "example.com"),
-            ("wwwwww.example.com", "www.example.com"),
-            ("myexample.com", "example.com"),
-            ("www.example.com", "some_domain.org"),
-        ];
-        for (hostname, domain) in tests {
-            assert!(
-                !host_is_in_domain(hostname, domain),
-                "host=\"{0}\", domain=\"{1}\"",
-                hostname,
-                domain
-            );
-        }
-    }
 
     #[test]
     fn test_rrset_matches_expected() {

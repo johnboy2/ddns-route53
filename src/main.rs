@@ -12,6 +12,7 @@ use tokio::task::{JoinHandle, LocalSet};
 mod addresses;
 mod aws_route53;
 mod config;
+mod host_names;
 mod ip_algorithms;
 mod os_helpers;
 
