@@ -198,14 +198,20 @@ where
 
     if desired_addresses.is_empty() {
         if let Some(current) = &current_address_records {
-            debug!("{log_prefix}: adding DELETE");
-            let chg = Change::builder()
-                .set_action(Some(ChangeAction::Delete))
-                .set_resource_record_set(Some(current.clone()))
-                .build()
-                .context("error building Route53:Change (deletion) object")?;
-            changes.push(chg);
-            changes_added = true;
+            if current
+                .resource_records
+                .as_ref()
+                .is_some_and(|rrs| !rrs.is_empty())
+            {
+                debug!("{log_prefix}: adding DELETE");
+                let chg = Change::builder()
+                    .set_action(Some(ChangeAction::Delete))
+                    .set_resource_record_set(Some(current.clone()))
+                    .build()
+                    .context("error building Route53:Change (deletion) object")?;
+                changes.push(chg);
+                changes_added = true;
+            }
         }
     } else if !current_address_records.as_ref().is_some_and(|rrs| {
         resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix)
