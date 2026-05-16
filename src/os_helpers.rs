@@ -62,7 +62,9 @@ pub mod posix {
             } else if let Ok(valid_utf8) = std::str::from_utf8(codeset_name) {
                 return Some(std::borrow::Cow::Borrowed(valid_utf8));
             } else {
-                return Some(std::borrow::Cow::Owned(String::from_utf8_lossy(codeset_name).into_owned()));
+                return Some(std::borrow::Cow::Owned(
+                    String::from_utf8_lossy(codeset_name).into_owned(),
+                ));
             }
         }
 
@@ -123,7 +125,11 @@ pub mod posix {
         if rc != 0 {
             let error_msg_cptr = unsafe { CStr::from_ptr(strerror(rc)) };
             let error_str = String::from_utf8_lossy(error_msg_cptr.to_bytes());
-            Err(anyhow!("Failed to retrieve user information for UID={}: {}", uid, error_str))
+            Err(anyhow!(
+                "Failed to retrieve user information for UID={}: {}",
+                uid,
+                error_str
+            ))
         } else if !getpwuid_result.is_null() {
             let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
             let home_dir = OsStr::from_bytes(home_dir_cptr.to_bytes());
