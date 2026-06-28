@@ -20,24 +20,34 @@ fn get_char_representation(ch: char) -> Cow<'static, str> {
     }
 }
 
-pub fn host_is_in_domain(host_fqdn_normalized: &str, domain: &str) -> bool {
-    if let Ok(domain_normalized) = normalize_host_name(domain) {
-        if host_fqdn_normalized == domain_normalized {
-            return true;
-        }
-        if host_fqdn_normalized.ends_with(domain_normalized.as_ref()) {
-            // While this would match "host.domain.com" in "domain.com" (which we want),
-            // it would also match "mydomain.com" against "domain.com" (which we don't want).
-            // So we must check that a dot ('.') immediately precedes the domain portion.
-            let host_lc_bytes = host_fqdn_normalized.as_bytes();
-            let domain_lc_bytes = domain_normalized.as_bytes();
-            let maybe_separator = host_lc_bytes[host_lc_bytes.len() - domain_lc_bytes.len() - 1];
-            if maybe_separator == b'.' {
-                return true;
-            }
+pub fn host_is_in_domain(host_fqdn: &str, domain: &str) -> bool {
+    let host_normalized = normalize_host_name(host_fqdn);
+    let domain_normalized = normalize_host_name(domain);
+
+    if let Ok(host_n) = host_normalized {
+        if let Ok(domain_n) = domain_normalized {
+            return host_is_in_domain_normalized(host_n.as_ref(), domain_n.as_ref());
         }
     }
+    false
+}
 
+// This function requires that inputs have been pre-normalized using normalize_host_name() or similar.
+pub fn host_is_in_domain_normalized(host_fqdn_normalized: &str, domain_normalized: &str) -> bool {
+    if host_fqdn_normalized == domain_normalized {
+        return true;
+    }
+    if host_fqdn_normalized.ends_with(domain_normalized) && domain_normalized.len() < host_fqdn_normalized.len() {
+        // While this would match "host.domain.com" in "domain.com" (which we want),
+        // it would also match "mydomain.com" against "domain.com" (which we don't want).
+        // So we must check that a dot ('.') immediately precedes the domain portion.
+        let host_lc_bytes = host_fqdn_normalized.as_bytes();
+        let domain_lc_bytes = domain_normalized.as_bytes();
+        let maybe_separator = host_lc_bytes[host_lc_bytes.len() - domain_lc_bytes.len() - 1];
+        if maybe_separator == b'.' {
+            return true;
+        }
+    }
     false
 }
 

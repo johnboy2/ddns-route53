@@ -17,29 +17,37 @@ use tokio::time::{sleep, timeout};
 
 use crate::addresses::{Addresses, Route53AddressRecords};
 use crate::config::Config;
-use crate::host_names::{host_is_in_domain, normalize_host_name};
+use crate::host_names::{host_is_in_domain_normalized, normalize_host_name};
 
 // Helper to look up the zone ID for a given host name (i.e., if not provided by configuration or CLI arg).
-pub async fn get_zone_id(client: &Client, host_name: &str) -> anyhow::Result<String> {
-    let host_name_normalized = normalize_host_name(host_name)?;
-
+pub async fn find_zone_id(client: &Client, host_name: &src, host_name_normalized: &str) -> anyhow::Result<String> {
     let mut best_match: Option<String> = None;
+    let mut best_match_len = 0;
 
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
         let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
-            if host_is_in_domain(host_name_normalized.as_ref(), zone.name()) {
+            let zone_name_normalized = match normalize_host_name(zone.name()) {
+                Ok(name) => name,
+                Err(_e) => { continue; /* Silently ignore this one */}
+            };
+            if best_match_len < zone_name_normalized.len()
+                && host_is_in_domain_normalized(host_name_normalized.as_ref(), zone.name())
+            {
+                // A new "best so far" has been found.
+
                 // Route53 returns the zone ID as "/hostedzone/ZONEID", so we strip the prefix for further use.
-                let zone_id = zone
-                    .id
-                    .strip_prefix("/hostedzone/")
-                    .unwrap_or(zone.id.as_str());
-                if best_match
-                    .as_ref()
-                    .is_none_or(|best_zone_id| best_zone_id.len() < zone_id.len())
-                {
-                    best_match = Some(zone_id.to_owned());
+                if let Some(zone_id) = zone.id.strip_prefix("/hostedzone/") {
+                    if zone_name_normalized.len() == host_name_normalized.len() {
+                        // This is actually the best *possible* match (exact zone-match).
+                        // Short-circuit any further checks.
+                        return Ok(zone_id.to_owned());
+                    }
+                    else {
+                        best_match = Some(zone_id.to_owned());
+                        best_match_len = zone_name_normalized.len();
+                    }
                 }
             }
         }
@@ -266,6 +274,7 @@ pub enum UpdateHostResult {
 pub async fn update_host_addresses_if_different(
     r53: &aws_sdk_route53::Client,
     config: &Config,
+    route53_zone_id: &str,
     desired_addresses: &Addresses,
     current_address_records: &Route53AddressRecords,
     route53_zone_id: &str
