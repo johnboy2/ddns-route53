@@ -11,18 +11,18 @@ rust-version = "1.91.1"  # Required for AWS dependencies
 
 [dependencies]
 anyhow = "1.0"
-aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-route53 = "1"
-aws-types = "1.3"
-clap = { version = "4.5", features = ["derive","wrap_help"] }
+aws-types = "1"
+clap = { version = "4", features = ["derive","wrap_help"] }
 encoding_rs = "0.8"
 fern = "0.7"
-humantime = "2.1"
+humantime = "2"
 idna = "1.1"
 igd-next = { version = "0.17", features = ["aio_tokio"] }
 log = "0.4"
 mime = "0.3"
-netdev = "0.42"
+netdev = "0.46"
 process-wrap = { version = "9.1", features = ["tokio1"] }
 reqwest = { version = "0.13", default-features = false, features = ["http2","stream"] }
 serde = { version = "1.0", features = ["derive"] }
