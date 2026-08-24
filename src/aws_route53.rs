@@ -57,8 +57,17 @@ pub async fn get_resource_records(
     host_name: &String,
     route53_zone_id: &str,
 ) -> anyhow::Result<Route53AddressRecords> {
-    // The `set_max_items(Some(2))` below IS SAFE, because we're only interested in 'A' and 'AAAA'
-    // records -- which are sorted *before* any other record types.
+    // The `ListResourceRecordSets` API call sorts records first by name (which is fixed in our
+    // case) and then by type. We only care about 'A' and 'AAAA' records, which also happen to
+    // be the first two record types supported by AWS Route53 (for a list of supported record
+    // types, see
+    // https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html).
+    //
+    // Additionally, Route53 also groups all records of a given type into a single RecordSet
+    // whenever "simple" routing policies are used (which this program requires).
+    //
+    // Therefore, we should *never* need to fetch any more than two items -- as that is the most
+    // needed to get all 'A' and 'AAAA' (simple routing) records.
     let response = client
         .list_resource_record_sets()
         .set_hosted_zone_id(Some(route53_zone_id.to_owned()))
@@ -72,6 +81,7 @@ pub async fn get_resource_records(
     let mut v6: Option<ResourceRecordSet> = None;
     for rrs in response.resource_record_sets {
         if &rrs.name != host_name {
+            // The RRS only *starts with* `host_name`; so we're done once we've found "something else",
             break;
         }
         match rrs.r#type {
