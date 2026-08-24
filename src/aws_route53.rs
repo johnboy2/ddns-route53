@@ -258,6 +258,7 @@ pub async fn update_host_addresses_if_different(
     config: &Config,
     desired_addresses: &Addresses,
     current_address_records: &Route53AddressRecords,
+    route53_zone_id: &str
 ) -> anyhow::Result<UpdateHostResult> {
     // Build up the set of changes required (if any).
     let changes = {
@@ -310,7 +311,7 @@ pub async fn update_host_addresses_if_different(
     let change_fut = r53
         .change_resource_record_sets()
         .set_change_batch(Some(cb))
-        .set_hosted_zone_id(config.route53_zone_id.to_owned())
+        .set_hosted_zone_id(Some(route53_zone_id.to_string()))
         .send();
 
     // Await response to the change request

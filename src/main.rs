@@ -170,6 +170,7 @@ async fn main() {
         arc_config.as_ref(),
         &addresses_current,
         &addresses_route53,
+        zone_id.as_ref(),
     )
     .await
     {
