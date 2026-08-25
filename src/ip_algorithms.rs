@@ -490,7 +490,7 @@ impl Display for AlgorithmSpecification {
 }
 
 // Helper to download a document from a URL
-async fn get_web_service_document(
+async fn get_web_service_document<const WITH_REPLACEMENT: bool>(
     client: &Client,
     url: &Url,
     timeout: &Duration,
@@ -588,7 +588,7 @@ async fn get_web_service_document(
         let len_after_append = item.len() + body_binary.len();
         if MAX_WEB_SERVICE_DOCUMENT_LENGTH < (len_after_append as u64) {
             return Err(anyhow!(
-                "url \"{}\": body length ({}) too long (max={})",
+                "url \"{}\": body length ({}+) too long (max={})",
                 url.as_str(),
                 len_after_append,
                 MAX_WEB_SERVICE_DOCUMENT_LENGTH
@@ -598,25 +598,27 @@ async fn get_web_service_document(
     }
 
     if let Some(encoding) = encoding {
-        match encoding
-            .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
-            .map(|s| s.into_owned())
-        {
-            Some(decoded) => Ok(decoded),
-            None => {
-                error!(
-                    "web-service response could not be decoded; value: {:X?}",
-                    body_binary.as_slice()
-                );
-                Err(anyhow!(
-                    "failed to decode output with \"{}\"",
-                    encoding.name()
-                ))
+        if WITH_REPLACEMENT {
+            Ok(encoding.decode_without_bom_handling(body_binary.as_slice()).0.to_string())
+        }
+        else {
+            match encoding.decode_without_bom_handling_and_without_replacement(body_binary.as_slice()) {
+                Some(r) => Ok(r.to_string()),
+                None => {
+                    error!(
+                        "web-service response could not be decoded; value: {:X?}",
+                        body_binary.as_slice()
+                    );
+                    Err(anyhow!(
+                        "failed to decode output with \"{}\"",
+                        encoding.name()
+                    ))
+                }
             }
         }
     } else {
         // Use the HTTP default (ISO 8859-1). Since every possible byte is translated one-for-one to a code-point,
-        // there is no possibility of failure here -- other than possibly for memory exhaustion if it allocates.
+        // there is no possibility of a decoding failure here.
         Ok(decode_latin1(body_binary.as_slice()).to_string())
     }
 }
@@ -634,7 +636,7 @@ where
         .as_ref()
         .context("failed to initialize web client")?;
 
-    let body = get_web_service_document(client, url, timeout, default_encoding).await?;
+    let body = get_web_service_document::<true>(client, url, timeout, default_encoding).await?;
 
     let mut result = Vec::<T>::new();
     for line in body.as_str().lines() {
@@ -1245,7 +1247,7 @@ mod tests {
         ];
         for encoding in tests {
             let content = async_runtime
-                .block_on(get_web_service_document(
+                .block_on(get_web_service_document::<false>(
                     client,
                     &Url::parse(url.as_ref()).unwrap(),
                     &Duration::from_secs(30),
@@ -1296,7 +1298,7 @@ mod tests {
         let test_paths = ["/utf8", "/utf16le"];
         for test_path in test_paths {
             let content = async_runtime
-                .block_on(get_web_service_document(
+                .block_on(get_web_service_document::<false>(
                     client,
                     &Url::parse(server.url(test_path).as_ref()).unwrap(),
                     &Duration::from_secs(30),
@@ -1332,7 +1334,7 @@ mod tests {
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
-        let content = async_runtime.block_on(get_web_service_document(
+        let content = async_runtime.block_on(get_web_service_document::<true>(
             client,
             &Url::parse(url.as_ref()).unwrap(),
             &Duration::from_secs_f32(0.1f32),
@@ -1371,7 +1373,7 @@ mod tests {
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
-        let content = async_runtime.block_on(get_web_service_document(
+        let content = async_runtime.block_on(get_web_service_document::<true>(
             client,
             &Url::parse(url.as_ref()).unwrap(),
             &Duration::from_secs_f32(0.1f32),
@@ -1422,7 +1424,7 @@ mod tests {
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
-        let content = async_runtime.block_on(get_web_service_document(
+        let content = async_runtime.block_on(get_web_service_document::<true>(
             client,
             &Url::parse(url.as_ref()).unwrap(),
             &Duration::from_secs_f32(0.1f32),
