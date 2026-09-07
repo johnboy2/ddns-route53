@@ -257,7 +257,9 @@ pub mod windows {
             _ => MB_ERR_INVALID_CHARS,
         };
 
-        let mut buf = vec![0u16; input.len()];
+        // Using twice the #bytes as the input (plus some extra to allow for NULL-termination),
+        // satisfies all possible cases EXCEPT if using flags to enable normalization decomposition.
+        let mut buf = vec![0u16; input.len() + 1];
         let hr: i32 = unsafe {
             MultiByteToWideChar(
                 code_page,
