@@ -332,10 +332,21 @@ pub mod windows {
             );
 
             if length == 0 || buffer.is_null() {
+                // We didn't get an error message; so make one with the error code that we have.
                 result = format!("Error code: {message_id:08X}");
             } else {
-                let slice = std::slice::from_raw_parts(buffer, length as usize);
-                result = String::from_utf16_lossy(slice).trim().to_string();
+                // We got an error message; parse it out.
+                let mut slice = std::slice::from_raw_parts(buffer, length as usize);
+
+                // Strip trailing whitespace before concerting from UTF-16.
+                while slice.last().is_some_and(|ord| *ord == 13 || *ord == 10 || *ord == 32 || *ord == 9) {
+                    slice = &slice[0..(slice.len()-1)];
+                }
+
+                result = String::from_utf16_lossy(slice).to_string();
+            }
+
+            if !buffer.is_null() {
                 LocalFree(buffer as HLOCAL);
             }
         }
