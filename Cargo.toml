@@ -36,6 +36,8 @@ httpmock = "0.8"
 ipnet = "2.12"
 
 [features]
+# Enables use of native libraries for decoding plugin outputs. This uses iconv
+# on POSIX systems, and Win32's MultiByuteToWideChar on Windows.
 native-decode = ["dep:iconv-native"]
 
 [target.'cfg(unix)'.dependencies]

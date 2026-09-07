@@ -8,93 +8,76 @@ pub mod posix {
     use std::ptr::null_mut;
 
     use anyhow::anyhow;
-    use libc::{geteuid, getpwuid_r, strerror};
+    use libc::{geteuid, getpwuid_r, nl_langinfo, strerror, CHARSET};
+    use log::warn;
 
     #[cfg(feature = "native-decode")]
     pub fn get_active_code_set() -> Option<String> {
-        for var_to_try in ["LC_ALL", "LC_CTYPE", "LANG"] {
-            if let Some(env_var_value) = std::env::var_os(var_to_try) {
-                if env_var_value == OsStr::from_bytes(b"C") {
-                    log::debug!(
-                        "Found env:{var_to_try}='{}'; using POSIX (C) locale",
-                        String::from_utf8_lossy(env_var_value.as_encoded_bytes())
-                    );
-                    return None;
-                } else if let Some(code_set) = get_code_set_for_env_var_value(&env_var_value) {
-                    log::debug!(
-                        "Found env:{var_to_try}='{}'; using codeset: {}",
-                        String::from_utf8_lossy(env_var_value.as_encoded_bytes()),
-                        code_set
-                    );
-                    return Some(code_set.to_string());
-                } else {
-                    log::debug!(
-                        "No usable codeset found in env:{var_to_try}='{env_var_value:?}'; ignoring"
-                    );
-                }
-            }
-        }
-        None
-    }
+        let ptr = libc::nl_langinfo(CHARSET);
 
-    #[inline]
-    #[cfg(feature = "native-decode")]
-    pub fn get_code_set_for_env_var_value<'a>(
-        env_var_value: &'a OsStr,
-    ) -> Option<std::borrow::Cow<'a, str>> {
-        let os_value_bytes = env_var_value.as_encoded_bytes();
-
-        // Find the index of the first period
-        if let Some(start_offset) = os_value_bytes.iter().position(|b| *b == b'.') {
-            // Find the encoding (which may be terminated by an '@' modifier)
-            let start_offset = start_offset + 1;
-            let codeset_name = if let Some(codeset_length) = os_value_bytes[start_offset..]
-                .iter()
-                .position(|b| *b == b'@')
-            {
-                &os_value_bytes[start_offset..(start_offset + codeset_length)]
-            } else {
-                &os_value_bytes[start_offset..]
-            };
-
-            if codeset_name.is_empty() {
-                return None;
-            } else if let Ok(valid_utf8) = std::str::from_utf8(codeset_name) {
-                return Some(std::borrow::Cow::Borrowed(valid_utf8));
-            } else {
-                return Some(std::borrow::Cow::Owned(
-                    String::from_utf8_lossy(codeset_name).into_owned(),
-                ));
-            }
+        if ptr.is_null() {
+            panic!("nl_langinfo() returned NULL - which should be impossible");
         }
 
-        None
+        let c_str = CStr::from_ptr(ptr);
+        let result = if c_str.is_empty() {
+            String::from_utf8("C")
+        }
+        else {
+            c_str.to_string_lossy().into_owned()
+        };
+
+        log::debug!("Using codeset {}", result.as_str());
+        Some(result)
     }
 
+    /// Converts a byte slice to a UTF8 string using the active locale/codeset.
     #[cfg(feature = "native-decode")]
-    pub fn convert_code_set_slice_to_string(
-        code_set: &str,
+    pub fn convert_slice_to_string(
         input: &[u8],
     ) -> anyhow::Result<String> {
-        iconv_native::decode(input, code_set)
-            .map_err(|e| anyhow!("Decoding error for code-set '{code_set}': {e}"))
-    }
-
-    pub fn convert_c_locale_slice_to_string(data: &[u8]) -> anyhow::Result<String> {
-        // First verify no unexpected bytes
-        for (idx, ch) in data.iter().enumerate() {
-            if ch & 0x80u8 != 0 {
-                return Err(anyhow!(
-                    "Decoding error for C locale: byte 0x{:02X} at offset {} is outside acceptable range (0x00-0x7F)",
-                    ch, idx
-                ));
-            }
+        let ptr = libc::nl_langinfo(CHARSET);
+        if ptr.is_null() {
+            convert_c_locale_slice_to_string(input)
         }
-
-        // Since UTF8 is 100% backwards compatible with 7-bit ASCII, we can safely re-use that decoder.
-        Ok(unsafe { str::from_utf8_unchecked(data) }.to_string())
+        else {
+            convert_code_set_slice_to_string(input, CStr::from_ptr(ptr))
+        }
     }
 
+    /// Converts a codeset byte slice to a UTF8 string.
+    #[inline]
+    pub fn convert_code_set_slice_to_string(data: &[u8], code_set: CStr)  -> anyhow::Result<String> {
+        if let Some(s) = code_set.to_str() {
+            iconv_native::decode(input, s)
+                .map_err(|e| anyhow!("Decoding error for code-set '{code_set}': {e}, got {} bytes", data.len()))
+        }
+        else {
+            let code_set_escaped =
+                code_set
+                .to_bytes()
+                .iter()
+                .flat_map(|b| b.escape_ascii())
+                .map(char::from)
+                .collect::<string>()
+            ;
+            Err(anyhow!("Decoding error for code-set '{}': Not found", code_set_escaped.as_str()))
+        }
+    }
+
+    /// Converts a C (Posix) locale byte slice to a UTF8 string.
+    #[inline]
+    pub fn convert_c_locale_slice_to_string(data: &[u8]) -> anyhow::Result<String> {
+        if !data.is_ascii() {
+            Err(anyhow!("C locale requires ASCII-only data"))
+        }
+        else {
+            // Safety: This is okay because data is ASCII only at this point
+            Ok(unsafe { String::from_utf8_unchecked(data) })
+        }
+    }
+
+    /// Get the current user's home directory
     pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
         const PASSWD_ENTRY_BUFFER_SIZE: usize = 16384;
 
@@ -156,32 +139,6 @@ pub mod posix {
             let home_dir = maybe_home_dir.unwrap();
             let env_home_dir = var_os("HOME").map(|oss| PathBuf::from(oss));
             assert_eq!(home_dir, env_home_dir);
-        }
-
-        #[test]
-        #[cfg(feature = "native-decode")]
-        fn test_get_code_set_for_env_var_value() {
-            for (env_value, expected_code_set) in [
-                (b"en_US.UTF-8".as_slice(), Some("UTF-8")),
-                (b"en_GB.UTF-16LE".as_slice(), Some("UTF-16LE")),
-                (b"en_GB.UTF-16BE@modifier".as_slice(), Some("UTF-16BE")),
-                (b"en_GB.UTF-8@modifier".as_slice(), Some("UTF-8")),
-                (b"en_GB.@modifier".as_slice(), None),
-                (b"en_GB.UTF-8", Some("UTF-8")),
-                (b"en_GB.UTF-8@".as_slice(), Some("UTF-8")),
-                (b"en_GB.UTF-8@modifier@extraneous".as_slice(), Some("UTF-8")),
-                (b"en_GB.UTF-unsupported".as_slice(), Some("UTF-unsupported")),
-            ] {
-                let env_value_osstr = OsStr::from_bytes(env_value);
-                let maybe_code_set = get_code_set_for_env_var_value(&env_value_osstr);
-
-                assert_eq!(
-                    maybe_code_set.as_deref(),
-                    expected_code_set,
-                    "env_value={:?}",
-                    env_value
-                );
-            }
         }
 
         #[test]
