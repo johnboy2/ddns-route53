@@ -79,11 +79,19 @@ pub mod posix {
 
     /// Get the current user's home directory
     pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
-        const PASSWD_ENTRY_BUFFER_SIZE: usize = 16384;
+        // This value is deliberately huge to minimize the chance of needing re-allocation.
+        const FALLBACK_INITIAL_PASSWD_ENTRY_BUFFER_SIZE: usize = 4096;
+        const MAXIMUM_PASSWD_ENTRY_BUFFER_SIZE: usize = 65536;
+
+        // Try to get system-provided recommended size, with fallback if not available.
+        let mut buf_size = match sysconf(libc::_SC_GETPW_R_SIZE_MAX) {
+            -1 => INITIAL_PASSWD_ENTRY_BUFFER_SIZE,
+            size => size as usize
+        };
 
         let uid = unsafe { geteuid() };
 
-        let mut passwd_entry_buffer = [0i8; PASSWD_ENTRY_BUFFER_SIZE];
+        let mut passwd_entry_buffer = Vec::with_capacity(buf_size);
         let mut passwd_entry = libc::passwd {
             pw_name: null_mut(),
             pw_passwd: null_mut(),
@@ -94,32 +102,66 @@ pub mod posix {
             pw_shell: null_mut(),
         };
 
-        let mut getpwuid_result: *mut libc::passwd = null_mut();
-        let rc = unsafe {
-            getpwuid_r(
-                uid,
-                &mut passwd_entry,
-                passwd_entry_buffer.as_mut_ptr(),
-                passwd_entry_buffer.len(),
-                &mut getpwuid_result,
-            )
-        };
+        loop {
+            passwd_entry_buffer.resize(0i8, buf_size);
 
-        if rc != 0 {
-            let error_msg_cptr = unsafe { CStr::from_ptr(strerror(rc)) };
-            let error_str = String::from_utf8_lossy(error_msg_cptr.to_bytes());
-            Err(anyhow!(
-                "Failed to retrieve user information for UID={}: {}",
-                uid,
-                error_str
-            ))
-        } else if !getpwuid_result.is_null() {
-            let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
-            let home_dir = OsStr::from_bytes(home_dir_cptr.to_bytes());
-            Ok(Some(PathBuf::from(home_dir)))
-        } else {
-            Ok(None)
+            let mut getpwuid_result: *mut libc::passwd = null_mut();
+            let rc = unsafe {
+                getpwuid_r(
+                    uid,
+                    &mut passwd_entry,
+                    passwd_entry_buffer.as_mut_ptr(),
+                    passwd_entry_buffer.len(),
+                    &mut getpwuid_result,
+                )
+            };
+
+            match rc {
+                0 => {
+                    if getpwuid_result.is_null() || unsafe { (*getpwuid_result).pw_dir.is_null() } {
+                        break;
+                    }
+                    else {
+                        let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
+                        if home_dir_cptr.is_empty() {
+                            break;
+                        }
+                        let home_dir_osstr = OsStr::from_bytes(home_dir_cptr.to_bytes());
+                        let home_dir = PathBuf::from(home_dir_osstr);
+                        if !home_dir.is_dir() {
+                            break;
+                        }
+                        return Ok(Some(home_dir));
+                    }
+                }
+                libc::ERANGE => {
+                    let next_buf_size = std::cmp::min(buf_size * 2, MAXIMUM_PASSWD_ENTRY_BUFFER_SIZE);
+                    if buf_size == next_buf_size {
+                        warn!("Ignoring user's homedir: required size exceeds maximum ({MAXIMUM_PASSWD_ENTRY_BUFFER_SIZE}B)");
+                        break;
+                    }
+                    else {
+                        buf_size = next_buf_size;
+                    }
+                }
+                libc::ENOENT | libc::ESRCH | libc::EBADF | libc::EPERM => {
+                    break;
+                }
+                libc::EINTR => {
+                    // Ignore and try again
+                }
+                _ => {
+                    let error_msg_cptr = unsafe { CStr::from_ptr(strerror(rc)) };
+                    let error_str = String::from_utf8_lossy(error_msg_cptr.to_bytes());
+                    return Err(anyhow!(
+                        "Failed to retrieve user information for UID={}: {}",
+                        uid,
+                        error_str
+                    ));
+                }
+            }
         }
+        Ok(None)
     }
 
     #[cfg(test)]
