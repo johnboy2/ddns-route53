@@ -128,12 +128,11 @@ pub mod posix {
         use std::env::var_os;
 
         #[test]
-        fn test_get_home_dir() {
+        fn test_get_home_dir_returns_users_homedir_when_available() {
             let maybe_home_dir = get_posix_user_home_dir();
             assert!(
                 maybe_home_dir.is_ok(),
-                "err={:?}",
-                maybe_home_dir.unwrap_err()
+                "Expected get_posix_user_home_dir to succeed: {err:?}"
             );
 
             let home_dir = maybe_home_dir.unwrap();
@@ -154,11 +153,11 @@ pub mod posix {
                 let maybe_result = convert_code_set_slice_to_string(code_set, data_utf8);
                 assert!(
                     maybe_result.is_ok(),
-                    "code_set={code_set} err={:?}",
+                    "Failed to decode with codeset={code_set}: {:?}",
                     maybe_result.unwrap_err()
                 );
                 let result = maybe_result.unwrap();
-                assert_eq!(result, data, "code_set={code_set}");
+                assert_eq!(result, data, "Failed to decode with codeset={code_set}: mismatched data");
             }
 
             let data_utf16be: Vec<u8> = data.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
@@ -169,7 +168,7 @@ pub mod posix {
                     convert_code_set_slice_to_string(code_set, data_encoded.as_slice());
                 assert!(
                     maybe_result.is_ok(),
-                    "codeset={code_set} err={:?}",
+                    "Failed to decode with codeset={code_set}: {:?}",
                     maybe_result.unwrap_err()
                 );
                 let result = maybe_result.unwrap();
@@ -205,7 +204,7 @@ pub mod windows {
         if code_page == 65001 {
             // Fast path for UTF-8, which is the most common code-page and doesn't require any transcoding.
             return String::from_utf8(input.to_vec())
-                .map_err(|e| anyhow!("UTF-8 decoding error: {e}"));
+                .map_err(|e| anyhow!("Error decoding from codepage {code_page}: {e}"));
         }
 
         let flags: u32 = match code_page {
@@ -230,7 +229,7 @@ pub mod windows {
         if hr == 0 {
             let error_code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
             return Err(anyhow!(
-                "MultiByteToWideChar failed: {}",
+                "Error decoding from codepage {code_page}: {}",
                 convert_hresult_to_error_message_string(error_code)
             ));
         }
@@ -326,8 +325,15 @@ pub mod windows {
         } else if hr == E_INVALIDARG {
             result = Ok(None); // No such known-folder on *this* system.
         } else {
+            let guid_str = format!(
+                "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+                guid.data1, guid.data2, guid.data3,
+                guid.data4[0], guid.data4[1], guid.data4[2], guid.data4[3],
+                guid.data4[4], guid.data4[5], guid.data4[6], guid.data4[7],
+            );
             result = Err(anyhow!(
-                "{}",
+                "Error getting known folder for {{{}}}: {}",
+                guid_str.as_str(),
                 convert_hresult_to_error_message_string(hr as u32)
             ));
         }
@@ -400,18 +406,18 @@ pub mod windows {
 
             let local_app_data = maybe_local_app_data.unwrap();
             let env_local_app_data = var_os("LOCALAPPDATA").map(|oss| PathBuf::from(oss));
-            assert_eq!(local_app_data, env_local_app_data);
+            assert_eq!(local_app_data, env_local_app_data, "Expected %LOCALAPPDATA% API result to match envvar");
 
             let maybe_program_data = get_program_data_folder();
             assert!(
                 maybe_program_data.is_ok(),
-                "err={:?}",
+                "Error getting programdata folder: err={:?}",
                 maybe_program_data.unwrap_err()
             );
 
             let program_data = maybe_program_data.unwrap();
             let env_program_data = var_os("ProgramData").map(|oss| PathBuf::from(oss));
-            assert_eq!(program_data, env_program_data);
+            assert_eq!(program_data, env_program_data, "Expected %PROGRAMDATA% API result to match envvar");
         }
 
         #[test]
