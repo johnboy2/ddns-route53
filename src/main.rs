@@ -178,7 +178,6 @@ async fn main() {
         zone_id.as_str(),
         &addresses_current,
         &addresses_route53,
-        zone_id.as_ref(),
     )
     .await
     {
