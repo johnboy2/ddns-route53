@@ -27,6 +27,8 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_stream::StreamExt;
 
+use crate::os_helpers::PlatformStringDecoder;  // Import trait
+
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
 static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
@@ -797,7 +799,13 @@ fn decode_plugin_output(
     data: &[u8],
     configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
-    const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
+    const UTF16_HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
+    const UTF16_NATIVE: &'static Encoding = if cfg!(target_endian = "little") {
+        encoding_rs::UTF_16LE
+    }
+    else {
+        encoding_rs::UTF_16BE
+    };
 
     if data.is_empty() {
         Ok(String::new())
@@ -813,73 +821,16 @@ fn decode_plugin_output(
             encoding.name()
         );
         decode_bytes_with_encoding(&data[bom_len_bytes..], encoding)
-    } else if HIGH_BYTE_IDX < data.len() && data[HIGH_BYTE_IDX] == 0 {
-        if cfg!(target_endian = "little") {
-            debug!(
-                "Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16LE"
-            );
-            decode_bytes_with_encoding(data, encoding_rs::UTF_16LE)
-        } else {
-            debug!(
-                "Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16BE"
-            );
-            decode_bytes_with_encoding(data, encoding_rs::UTF_16BE)
-        }
+    } else if UTF16_HIGH_BYTE_IDX < data.len() && data[UTF16_HIGH_BYTE_IDX] == 0 {
+        debug!(
+            "Found NULL-byte offset {UTF16_HIGH_BYTE_IDX} in plugin output; using encoding: {}",
+            UTF16_NATIVE.name()
+        );
+        decode_bytes_with_encoding(data, UTF16_NATIVE)
     } else {
-        #[cfg(feature = "native-decode")]
-        {
-            #[cfg(unix)]
-            {
-                debug!("No encoding could be detected from plugin output; trying current locale (code set) instead");
-                if let Some(active_code_set) = crate::os_helpers::posix::get_active_code_set() {
-                    crate::os_helpers::posix::convert_code_set_slice_to_string(
-                        active_code_set.as_str(),
-                        data,
-                    )
-                } else {
-                    crate::os_helpers::posix::convert_c_locale_slice_to_string(data)
-                }
-            }
-
-            #[cfg(windows)]
-            {
-                debug!("No encoding could be detected from plugin output; trying active code page instead");
-                let active_code_page = crate::os_helpers::windows::get_active_code_page();
-                crate::os_helpers::windows::convert_code_page_slice_to_string(
-                    active_code_page,
-                    data,
-                )
-            }
-
-            #[cfg(not(any(unix, windows)))]
-            {
-                let fallback_encoding = encoding_rs::UTF_8;
-                debug!(
-                    "No encoding could be detected from plugin output, and no native encoding detection available on this platform; trying fallback {0} instead",
-                    fallback_encoding.name()
-                );
-                decode_bytes_with_encoding(data, fallback_encoding)
-            }
-        }
-
-        #[cfg(not(feature = "native-decode"))]
-        {
-            #[cfg(unix)]
-            {
-                debug!("No encoding could be detected from plugin output; trying C locale instead");
-                crate::os_helpers::posix::convert_c_locale_slice_to_string(data)
-            }
-
-            #[cfg(not(unix))]
-            {
-                let fallback_encoding = encoding_rs::UTF_8;
-                debug!(
-                    "No encoding could be detected from plugin output; trying fallback {0} instead",
-                    fallback_encoding.name()
-                );
-                decode_bytes_with_encoding(data, fallback_encoding)
-            }
-        }
+        let native_decoder = crate::os_helpers::NativeDecoder::new();
+        debug!("No encoding could be detected from plugin output; trying {} instead", native_decoder.name());
+        native_decoder.decode(data)
     }
 }
 
