@@ -20,18 +20,6 @@ fn get_char_representation(ch: char) -> Cow<'static, str> {
     }
 }
 
-pub fn host_is_in_domain(host_fqdn: &str, domain: &str) -> bool {
-    let host_normalized = normalize_host_name(host_fqdn);
-    let domain_normalized = normalize_host_name(domain);
-
-    if let Ok(host_n) = host_normalized {
-        if let Ok(domain_n) = domain_normalized {
-            return host_is_in_domain_normalized(host_n.as_ref(), domain_n.as_ref());
-        }
-    }
-    false
-}
-
 // This function requires that inputs have been pre-normalized using normalize_host_name() or similar.
 pub fn host_is_in_domain_normalized(host_fqdn_normalized: &str, domain_normalized: &str) -> bool {
     if host_fqdn_normalized == domain_normalized {
@@ -152,22 +140,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_host_in_domain() {
+    fn test_host_is_in_domain_normalized() {
         let tests = [
-            ("example.com", "example.com"),
-            ("example.com", "com"),
-            ("www.example.com", "com"),
-            ("a.b.c.d.e.example.com", "example.com"),
-            ("www.example.com", "example.com"),
-            ("example.com", "EXAMPLE.COM"),
-            ("example.com", "COM"),
-            ("www.example.com", "COM"),
-            ("www.example.com", "EXAMPLE.COM"),
+            ("example.com", "example.com."),
+            ("example.com", "com."),
+            ("www.example.com", "com."),
+            ("a.b.c.d.e.example.com", "example.com."),
+            ("www.example.com", "example.com."),
+            ("EXAMPLE.com", "example.com."),
+            ("example.COM", "com."),
         ];
         for (hostname, domain) in tests {
             let hostname_normalized = normalize_host_name(hostname).unwrap();
             assert!(
-                host_is_in_domain(hostname_normalized.as_ref(), domain),
+                host_is_in_domain_normalized(hostname_normalized.as_ref(), domain),
                 "host=\"{0}\", domain=\"{1}\"",
                 hostname,
                 domain
@@ -178,14 +164,14 @@ mod tests {
     #[test]
     fn test_host_not_in_domain() {
         let tests = [
-            ("com", "example.com"),
-            ("wwwwww.example.com", "www.example.com"),
-            ("myexample.com", "example.com"),
-            ("www.example.com", "some_domain.org"),
+            ("com.", "example.com."),
+            ("wwwwww.example.com.", "www.example.com."),
+            ("myexample.com.", "example.com."),
+            ("www.example.com.", "some_domain.org."),
         ];
         for (hostname, domain) in tests {
             assert!(
-                !host_is_in_domain(hostname, domain),
+                !host_is_in_domain_normalized(hostname, domain),
                 "host=\"{0}\", domain=\"{1}\"",
                 hostname,
                 domain
