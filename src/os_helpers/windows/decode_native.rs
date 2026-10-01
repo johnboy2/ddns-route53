@@ -117,4 +117,15 @@ mod tests {
             assert_eq!(converted.unwrap(), test_data);
         }
     }
+
+    #[test]
+    fn test_code_page_850() {
+        let test_data = b"\xDA\xBF \xC0\xD9";
+        let expected = "┌┐ └┘";
+
+        let decoder = CodePageDecoder {code_page: 850};
+        let converted = decoder.decode(test_data);
+        assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+        assert_eq!(converted.unwrap(), expected);
+    }
 }

@@ -152,4 +152,22 @@ mod tests {
             assert_eq!(converted.unwrap(), data);
         }
     }
+
+    #[test]
+    fn test_code_set_iso_8859_1() {
+        let data_iso8859_1 = b"In for a \xA2, in for a \xA3.";
+        let data = "In for a ¢, in for a £.";
+        let converted = decoder.decode(&data_iso8859_1);
+        assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+        assert_eq!(converted.unwrap(), data);
+    }
+
+    #[test]
+    fn test_code_set_iso_8859_15() {
+        let data_iso8859_15 = b"In for a \xA2, in for a \xA4.";
+        let data = "In for a ¢, in for a €.";
+        let converted = decoder.decode(&data_iso8859_15);
+        assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+        assert_eq!(converted.unwrap(), data);
+    }
 }
