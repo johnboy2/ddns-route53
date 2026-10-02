@@ -409,7 +409,7 @@ impl AlgorithmSpecification {
         Ok(algo_result_only_globals)
     }
 
-    pub async fn get_public_ip_address_for_algos<T>(algos: &[AlgorithmSpecification]) -> HashSet<T>
+    pub async fn get_public_ip_address_for_algos<T>(algos: &[AlgorithmSpecification]) -> anyhow::Result<HashSet<T>>
     where
         T: IpAddressV4orV6,
         <T as FromStr>::Err: Display,
@@ -427,7 +427,7 @@ impl AlgorithmSpecification {
                         debug!("{ip_version}_algorithms[{idx}]: skipping empty result");
                     } else {
                         let ips_set: HashSet<_> = ips.into_iter().collect();
-                        return ips_set;
+                        return Ok(ips_set);
                     }
                 }
                 Err(msg) => {
@@ -440,7 +440,7 @@ impl AlgorithmSpecification {
             warn!("{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
         }
 
-        HashSet::<T>::new()
+        Ok(HashSet::<T>::new())
     }
 
     #[cfg(test)]

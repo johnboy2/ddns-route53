@@ -5,7 +5,6 @@ use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
 
-use aws_config::ConfigLoader;
 use log::{debug, error, info, trace, warn};
 use tokio::task::{JoinHandle, LocalSet};
 
@@ -24,21 +23,10 @@ use crate::config::Config;
 use crate::ip_algorithms::AlgorithmSpecification;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let start_time = Instant::now();
 
-    let config: Config;
-    let aws_loader: ConfigLoader;
-    match Config::load() {
-        Ok((conf, loader)) => {
-            config = conf;
-            aws_loader = loader;
-        }
-        Err(e) => {
-            error!("{e:?}");
-            return;
-        }
-    }
+    let (config, aws_loader) = Config::load()?;
     debug!("Using config file: {:?}", &config.config_file_path);
     trace!(
         "Configuration:\n{}",
@@ -122,12 +110,10 @@ async fn main() {
             {
                 Ok(Ok(zone_id)) => zone_id,
                 Ok(Err(e)) => {
-                    error!("{:#}", e);
-                    return;
+                    return Err(anyhow::Error::msg(format!("Failed to find zone ID: {e:?}")));
                 }
                 Err(e) => {
-                    error!("{:#}", e);
-                    return;
+                    return Err(anyhow::Error::msg(format!("Failed to find zone ID: {e:?}")));
                 }
             }
         }
@@ -154,8 +140,8 @@ async fn main() {
     local_set.await;
 
     let addresses_current = Addresses {
-        v4: fut_ipv4.await.expect("future-join should not panic"),
-        v6: fut_ipv6.await.expect("future-join should not panic"),
+        v4: fut_ipv4.await.expect("future-join should not panic")?,
+        v6: fut_ipv6.await.expect("future-join should not panic")?,
     };
     debug!("Got current: {:?}", addresses_current);
 
@@ -165,8 +151,9 @@ async fn main() {
     {
         Ok(r) => r,
         Err(e) => {
-            error!("{:#}", e);
-            return;
+            return Err(anyhow::Error::msg(format!(
+                "Failed to determine existing Route53 addresses: {e:?}"
+            )));
         }
     };
     debug!("Got route53: {:?}", Addresses::from(&addresses_route53));
@@ -207,4 +194,5 @@ async fn main() {
         "Total time required: {:.2} seconds",
         start_time.elapsed().as_secs_f32()
     );
+    Ok(())
 }
