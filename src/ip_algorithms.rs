@@ -193,9 +193,10 @@ impl IpAddressV4orV6 for Ipv4Addr {
     }
 
     async fn get_igd_public_ip(timeout: &Duration) -> anyhow::Result<Vec<Self>> {
-        let search_option = SearchOptions {
-            timeout: Some(*timeout),
-            ..Default::default()
+        let search_option = {
+            let mut opts = SearchOptions::default();
+            opts.timeout = Some(*timeout);
+            opts
         };
         let gateway = search_gateway(search_option).await?;
         let ip = gateway

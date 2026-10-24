@@ -19,7 +19,7 @@ encoding_rs = "0.8"
 fern = "0.7"
 humantime = "2"
 idna = "1.1"
-igd-next = { version = "0.17", features = ["aio_tokio"] }
+igd-next = { version = "0.18", features = ["aio_tokio"] }
 log = "0.4"
 mime = "0.3"
 netdev = "0.46"
