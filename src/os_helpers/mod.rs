@@ -10,20 +10,17 @@ pub trait PlatformStringDecoder {
     fn name(&self) -> std::borrow::Cow<'_, str>;
 }
 
-
 #[cfg(unix)]
 pub mod posix;
 
 #[cfg(unix)]
 pub use self::posix::*;
 
-
 #[cfg(windows)]
 pub mod windows;
 
 #[cfg(windows)]
 pub use self::windows::*;
-
 
 #[cfg(all(not(unix), not(windows)))]
 mod other;

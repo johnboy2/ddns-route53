@@ -27,7 +27,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_stream::StreamExt;
 
-use crate::os_helpers::PlatformStringDecoder;  // Import trait
+use crate::os_helpers::PlatformStringDecoder; // Import trait
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
@@ -288,7 +288,7 @@ pub enum AlgorithmSpecification {
     None,
 
     #[serde(rename = "default_public_ip")]
-    DefaultPublicIp{
+    DefaultPublicIp {
         #[serde(default)]
         skip_empty_result: bool,
     },
@@ -300,7 +300,6 @@ pub enum AlgorithmSpecification {
             with = "serde_duration_f64",
             default = "serde_default_algo_timeout"
         )]
-
         timeout: Duration,
 
         #[serde(default)]
@@ -375,7 +374,10 @@ impl AlgorithmSpecification {
                         ));
                     }
                 }
-                AlgorithmSpecification::InternetGatewayProtocol { timeout: _, skip_empty_result: _ } => {
+                AlgorithmSpecification::InternetGatewayProtocol {
+                    timeout: _,
+                    skip_empty_result: _,
+                } => {
                     if for_ipv6 {
                         return Err(anyhow!("algorithm '{algo_name}' cannot be used with IPv6"));
                     }
@@ -402,8 +404,11 @@ impl AlgorithmSpecification {
             AlgorithmSpecification::DefaultPublicIp { skip_empty_result } => {
                 result_can_be_skipped = *skip_empty_result;
                 T::get_default_public_ip().await
-            },
-            AlgorithmSpecification::InternetGatewayProtocol { timeout, skip_empty_result } => {
+            }
+            AlgorithmSpecification::InternetGatewayProtocol {
+                timeout,
+                skip_empty_result,
+            } => {
                 result_can_be_skipped = *skip_empty_result;
                 T::get_igd_public_ip(timeout).await
             }
@@ -415,7 +420,7 @@ impl AlgorithmSpecification {
             } => {
                 result_can_be_skipped = *skip_empty_result;
                 get_web_service_ip::<T>(url, timeout, *default_encoding).await
-            },
+            }
             AlgorithmSpecification::Plugin {
                 command,
                 timeout,
@@ -424,7 +429,7 @@ impl AlgorithmSpecification {
             } => {
                 result_can_be_skipped = *skip_empty_result;
                 get_plugin_ip::<T>(command, timeout, *encoding).await
-            }     
+            }
         }?;
 
         let algo_result_only_globals: Vec<T> = algo_result
@@ -441,7 +446,9 @@ impl AlgorithmSpecification {
         Ok(algo_result_only_globals)
     }
 
-    pub async fn get_public_ip_address_for_algos<T>(algos: &[AlgorithmSpecification]) -> anyhow::Result<HashSet<T>>
+    pub async fn get_public_ip_address_for_algos<T>(
+        algos: &[AlgorithmSpecification],
+    ) -> anyhow::Result<HashSet<T>>
     where
         T: IpAddressV4orV6,
         <T as FromStr>::Err: Display,
@@ -467,9 +474,10 @@ impl AlgorithmSpecification {
         if algos.is_empty() {
             warn!("{ip_version}_algorithms: no algorithms are configured");
             Ok(HashSet::new())
-        }
-        else {
-            Err(anyhow!("{ip_version}_algorithms: all configured algorithms failed!"))
+        } else {
+            Err(anyhow!(
+                "{ip_version}_algorithms: all configured algorithms failed!"
+            ))
         }
     }
 
@@ -481,7 +489,10 @@ impl AlgorithmSpecification {
     #[cfg(test)]
     pub fn supports_ipv6(&self) -> bool {
         match self {
-            AlgorithmSpecification::InternetGatewayProtocol { timeout: _, skip_empty_result: _ } => false,
+            AlgorithmSpecification::InternetGatewayProtocol {
+                timeout: _,
+                skip_empty_result: _,
+            } => false,
             _ => true,
         }
     }
@@ -505,12 +516,15 @@ impl Display for AlgorithmSpecification {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Self::None => f.write_str("none"),
-            Self::DefaultPublicIp{ skip_empty_result: _ } => {
-                f.write_str("default_public_ip")
-            },
-            Self::InternetGatewayProtocol { timeout: _, skip_empty_result: _ } => {
+            Self::DefaultPublicIp {
+                skip_empty_result: _,
+            } => f.write_str("default_public_ip"),
+            Self::InternetGatewayProtocol {
+                timeout: _,
+                skip_empty_result: _,
+            } => {
                 write!(f, "internet_gateway_protocol")
-            },
+            }
             Self::WebService {
                 url,
                 timeout: _,
@@ -637,10 +651,14 @@ async fn get_web_service_document<const WITH_REPLACEMENT: bool>(
 
     if let Some(encoding) = encoding {
         if WITH_REPLACEMENT {
-            Ok(encoding.decode_without_bom_handling(body_binary.as_slice()).0.to_string())
-        }
-        else {
-            match encoding.decode_without_bom_handling_and_without_replacement(body_binary.as_slice()) {
+            Ok(encoding
+                .decode_without_bom_handling(body_binary.as_slice())
+                .0
+                .to_string())
+        } else {
+            match encoding
+                .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
+            {
                 Some(r) => Ok(r.to_string()),
                 None => {
                     error!(
@@ -838,8 +856,7 @@ fn decode_plugin_output(
     const UTF16_HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
     const UTF16_NATIVE: &'static Encoding = if cfg!(target_endian = "little") {
         encoding_rs::UTF_16LE
-    }
-    else {
+    } else {
         encoding_rs::UTF_16BE
     };
 
@@ -865,7 +882,10 @@ fn decode_plugin_output(
         decode_bytes_with_encoding(data, UTF16_NATIVE)
     } else {
         let native_decoder = crate::os_helpers::NativeDecoder::new();
-        debug!("No encoding could be detected from plugin output; trying {} instead", native_decoder.name());
+        debug!(
+            "No encoding could be detected from plugin output; trying {} instead",
+            native_decoder.name()
+        );
         native_decoder.decode(data)
     }
 }

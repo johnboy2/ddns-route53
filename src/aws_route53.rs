@@ -20,7 +20,11 @@ use crate::config::Config;
 use crate::host_names::{host_is_in_domain_normalized, normalize_host_name};
 
 // Helper to look up the zone ID for a given host name (i.e., if not provided by configuration or CLI arg).
-pub async fn find_zone_id(client: &Client, host_name: &str, host_name_normalized: &str) -> anyhow::Result<String> {
+pub async fn find_zone_id(
+    client: &Client,
+    host_name: &str,
+    host_name_normalized: &str,
+) -> anyhow::Result<String> {
     let mut best_match: Option<String> = None;
     let mut best_match_len = 0;
 
@@ -30,7 +34,9 @@ pub async fn find_zone_id(client: &Client, host_name: &str, host_name_normalized
         for zone in page_output.hosted_zones.iter() {
             let zone_name_normalized = match normalize_host_name(zone.name()) {
                 Ok(name) => name,
-                Err(_e) => { continue; /* Silently ignore this one */}
+                Err(_e) => {
+                    continue; /* Silently ignore this one */
+                }
             };
             if best_match_len < zone_name_normalized.len()
                 && host_is_in_domain_normalized(host_name_normalized.as_ref(), zone.name())
@@ -43,8 +49,7 @@ pub async fn find_zone_id(client: &Client, host_name: &str, host_name_normalized
                         // This is actually the best *possible* match (exact zone-match).
                         // Short-circuit any further checks.
                         return Ok(zone_id.to_owned());
-                    }
-                    else {
+                    } else {
                         best_match = Some(zone_id.to_owned());
                         best_match_len = zone_name_normalized.len();
                     }
@@ -276,7 +281,7 @@ pub async fn update_host_addresses_if_different(
     config: &Config,
     route53_zone_id: &str,
     desired_addresses: &Addresses,
-    current_address_records: &Route53AddressRecords
+    current_address_records: &Route53AddressRecords,
 ) -> anyhow::Result<UpdateHostResult> {
     // Build up the set of changes required (if any).
     let changes = {

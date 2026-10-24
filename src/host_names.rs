@@ -25,7 +25,9 @@ pub fn host_is_in_domain_normalized(host_fqdn_normalized: &str, domain_normalize
     if host_fqdn_normalized == domain_normalized {
         return true;
     }
-    if host_fqdn_normalized.ends_with(domain_normalized) && domain_normalized.len() < host_fqdn_normalized.len() {
+    if host_fqdn_normalized.ends_with(domain_normalized)
+        && domain_normalized.len() < host_fqdn_normalized.len()
+    {
         // While this would match "host.domain.com" in "domain.com" (which we want),
         // it would also match "mydomain.com" against "domain.com" (which we don't want).
         // So we must check that a dot ('.') immediately precedes the domain portion.

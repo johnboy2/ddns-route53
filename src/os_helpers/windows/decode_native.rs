@@ -3,18 +3,18 @@
 use std::borrow::Cow;
 
 use anyhow::anyhow;
-use windows_sys::Win32::Globalization::{GetCPInfoExW, CP_ACP, CPINFOEXW};
+use windows_sys::Win32::Globalization::{GetCPInfoExW, CPINFOEXW, CP_ACP};
 
-use super::{LengthMode, PlatformStringDecoder, get_last_error_message, wcstr_to_string};
+use super::{get_last_error_message, wcstr_to_string, LengthMode, PlatformStringDecoder};
 
 pub struct CodePageDecoder {
-    code_page: u32
+    code_page: u32,
 }
 
 impl CodePageDecoder {
     pub fn new() -> Self {
         Self {
-            code_page: unsafe { windows_sys::Win32::Globalization::GetACP() }
+            code_page: unsafe { windows_sys::Win32::Globalization::GetACP() },
         }
     }
 }
@@ -30,8 +30,7 @@ impl PlatformStringDecoder for CodePageDecoder {
                     self.code_page,
                     wcstr_to_string(cp_info.CodePageName.as_ptr(), LengthMode::Auto)
                 ))
-            }
-            else {
+            } else {
                 Cow::Owned(format!("code page {} (<name unknown>)", self.code_page))
             }
         }
@@ -85,8 +84,6 @@ impl PlatformStringDecoder for CodePageDecoder {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,7 +96,11 @@ mod tests {
         let name = name_cow.as_ref();
         let is_ascii_digits = !name.is_empty() && name.chars().all(|c| c.is_ascii_digit());
 
-        assert!(is_ascii_digits, "Non-digit code-page found: '{}'", decoder.name().as_ref());
+        assert!(
+            is_ascii_digits,
+            "Non-digit code-page found: '{}'",
+            decoder.name().as_ref()
+        );
     }
 
     #[test]
@@ -111,9 +112,13 @@ mod tests {
             1252,  // Western European (Windows Latin1)
             65001, // UTF-8
         ] {
-            let decoder = CodePageDecoder {code_page};
+            let decoder = CodePageDecoder { code_page };
             let converted = decoder.decode(test_data_utf8);
-            assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+            assert!(
+                converted.is_ok(),
+                "decode error: {}",
+                converted.unwrap_err()
+            );
             assert_eq!(converted.unwrap(), test_data);
         }
     }
@@ -123,9 +128,13 @@ mod tests {
         let test_data = b"\xDA\xBF \xC0\xD9";
         let expected = "┌┐ └┘";
 
-        let decoder = CodePageDecoder {code_page: 850};
+        let decoder = CodePageDecoder { code_page: 850 };
         let converted = decoder.decode(test_data);
-        assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+        assert!(
+            converted.is_ok(),
+            "decode error: {}",
+            converted.unwrap_err()
+        );
         assert_eq!(converted.unwrap(), expected);
     }
 }

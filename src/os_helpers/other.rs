@@ -14,14 +14,12 @@ impl Utf8Decoder for CodePageDecoder {
     }
 
     fn decode(&self, data: &[u8]) -> anyhow::Result<String> {
-        String::from_utf8(data)
-        .map_err(|e| "Error decoding value as UTF-8: {e}")
+        String::from_utf8(data).map_err(|e| "Error decoding value as UTF-8: {e}")
     }
 }
 
 // Define the alias
 pub use Utf8Decoder as NativeDecoder;
-
 
 #[cfg(test)]
 mod tests {
@@ -37,7 +35,11 @@ mod tests {
         assert!(decoder.description() == "UTF-8");
 
         let converted = decoder.decode(test_data_utf8);
-        assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+        assert!(
+            converted.is_ok(),
+            "decode error: {}",
+            converted.unwrap_err()
+        );
         assert_eq!(converted.unwrap(), test_data);
     }
 }

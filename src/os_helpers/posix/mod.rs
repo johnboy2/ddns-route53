@@ -11,13 +11,11 @@ use log::warn;
 
 use super::PlatformStringDecoder;
 
-
 #[cfg(feature = "native-decode")]
 mod decode_native;
 
 #[cfg(feature = "native-decode")]
 pub use decode_native::CodeSetDecoder as NativeDecoder;
-
 
 #[cfg(not(feature = "native-decode"))]
 mod decode_simple;
@@ -38,7 +36,7 @@ pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
     // Try to get system-provided recommended size for a passwd entry, with fallback if not available.
     let mut buf_size = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
         -1 => FALLBACK_INITIAL_PASSWD_ENTRY_BUFFER_SIZE,
-        size => size as usize
+        size => size as usize,
     };
 
     let uid = unsafe { geteuid() };
@@ -70,8 +68,7 @@ pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
             0 => {
                 if getpwuid_result.is_null() || unsafe { (*getpwuid_result).pw_dir.is_null() } {
                     break;
-                }
-                else {
+                } else {
                     let home_dir_cptr = unsafe { CStr::from_ptr((*getpwuid_result).pw_dir) };
                     if home_dir_cptr.is_empty() {
                         break;
@@ -89,8 +86,7 @@ pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
                 if buf_size == next_buf_size {
                     warn!("Ignoring user's homedir: required size exceeds maximum ({MAXIMUM_PASSWD_ENTRY_BUFFER_SIZE}B)");
                     break;
-                }
-                else {
+                } else {
                     buf_size = next_buf_size;
                     passwd_entry_buffer.resize(buf_size, 0i8);
                     continue;
@@ -116,12 +112,10 @@ pub fn get_posix_user_home_dir() -> anyhow::Result<Option<PathBuf>> {
     Ok(None)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env::var_os;
-
 
     #[test]
     fn test_get_home_dir_returns_users_homedir_when_available() {

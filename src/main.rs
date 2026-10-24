@@ -17,7 +17,7 @@ mod os_helpers;
 
 use crate::addresses::{Addresses, Route53AddressRecords};
 use crate::aws_route53::{
-    get_resource_records, find_zone_id, update_host_addresses_if_different, UpdateHostResult,
+    find_zone_id, get_resource_records, update_host_addresses_if_different, UpdateHostResult,
 };
 use crate::config::Config;
 use crate::ip_algorithms::AlgorithmSpecification;
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         Some(zid) => {
             // Configuration or CLI gave us the zoneid; use the one we were given.
             zid.clone()
-        },
+        }
         None => {
             // Zone ID was *NOT* provided -- so we must search for which zone to use
             let arc_config = arc_config.clone();
@@ -93,13 +93,12 @@ async fn main() -> anyhow::Result<()> {
             match local_set
                 .spawn_local(async move {
                     let time: Instant = Instant::now();
-                    let zone_id_lookup_result =
-                        find_zone_id(
-                            rc_r53.as_ref(), 
-                            arc_config.host_name.as_str(),
-                            arc_config.host_name_normalized.as_str()
-                        )
-                        .await;
+                    let zone_id_lookup_result = find_zone_id(
+                        rc_r53.as_ref(),
+                        arc_config.host_name.as_str(),
+                        arc_config.host_name_normalized.as_str(),
+                    )
+                    .await;
                     trace!(
                         "Dynamic zone ID lookup took {:.2} seconds",
                         time.elapsed().as_secs_f32()

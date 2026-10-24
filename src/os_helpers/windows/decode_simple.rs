@@ -6,11 +6,12 @@ use anyhow::anyhow;
 
 use super::PlatformStringDecoder;
 
-
 pub struct SimpleDecoder {}
 
 impl SimpleDecoder {
-    pub fn new() -> Self { Self {} }
+    pub fn new() -> Self {
+        Self {}
+    }
 }
 
 impl PlatformStringDecoder for SimpleDecoder {
@@ -25,14 +26,12 @@ impl PlatformStringDecoder for SimpleDecoder {
     fn decode(&self, data: &[u8]) -> anyhow::Result<String> {
         if !data.is_ascii() {
             Err(anyhow!("ANSI content requires ASCII-only data"))
-        }
-        else {
+        } else {
             // Safety: This is okay because data is ASCII only at this point
             Ok(unsafe { String::from_utf8_unchecked(data.into()) })
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -48,7 +47,11 @@ mod tests {
         assert!(decoder.description() == "ANSI");
 
         let converted = decoder.decode(test_data_utf8);
-        assert!(converted.is_ok(), "decode error: {}", converted.unwrap_err());
+        assert!(
+            converted.is_ok(),
+            "decode error: {}",
+            converted.unwrap_err()
+        );
         assert_eq!(converted.unwrap(), test_data);
     }
 }

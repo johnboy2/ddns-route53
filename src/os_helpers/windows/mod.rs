@@ -20,20 +20,17 @@ use windows_sys::Win32::UI::Shell::{
 
 use super::PlatformStringDecoder;
 
-
 #[cfg(feature = "native-decode")]
 mod decode_native;
 
 #[cfg(feature = "native-decode")]
 pub use decode_native::CodePageDecoder as NativeDecoder;
 
-
 #[cfg(not(feature = "native-decode"))]
 mod decode_simple;
 
 #[cfg(not(feature = "native-decode"))]
 pub use decode_simple::SimpleDecoder as NativeDecoder;
-
 
 #[inline]
 fn make_lang_id(primary_id: u32, sublang_id: u32) -> u32 {
@@ -55,12 +52,11 @@ pub unsafe fn wcstr_to_slice<'a>(ptr: *const u16) -> &'a [u16] {
     std::slice::from_raw_parts(ptr, ptr_len)
 }
 
-
 #[allow(dead_code)]
 pub enum LengthMode {
     Auto,
     Bytes(usize),
-    Chars(usize)
+    Chars(usize),
 }
 
 #[inline]
@@ -74,7 +70,6 @@ pub unsafe fn wcstr_to_string(ptr: *const u16, length_mode: LengthMode) -> Strin
     let u16_slice = std::slice::from_raw_parts(ptr, ptr_len);
     String::from_utf16_lossy(u16_slice)
 }
-
 
 #[allow(dead_code)]
 pub fn convert_hresult_to_error_message_string(message_id: u32) -> String {
@@ -102,12 +97,13 @@ pub fn convert_hresult_to_error_message_string(message_id: u32) -> String {
             let slice = std::slice::from_raw_parts(buffer, num_chars as usize);
 
             // Windows error messages often have trailing whitespace (e.g., newlines); strip them.
-            let num_trailing_whitespaces =
-                slice
+            let num_trailing_whitespaces = slice
                 .iter()
                 .rev()
                 .map(|ord| *ord)
-                .take_while(|ord| (*ord < 0x7F) && matches!(*ord as u8, b'\n' | b'\r' | b'\t' | b' '))
+                .take_while(|ord| {
+                    (*ord < 0x7F) && matches!(*ord as u8, b'\n' | b'\r' | b'\t' | b' ')
+                })
                 .count();
             let truncated_slice = &slice[0..(slice.len() - num_trailing_whitespaces)];
 
@@ -128,7 +124,6 @@ pub fn get_last_error_message() -> String {
     let error_code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
     convert_hresult_to_error_message_string(error_code)
 }
-
 
 // Our production code doesn't use environment variables to determine the paths of these folders because
 // they might not be passed through correctly in all contexts. So this uses the Windows API instead.
@@ -161,9 +156,17 @@ pub fn get_known_folder(guid: GUID) -> anyhow::Result<Option<PathBuf>> {
     } else {
         let guid_str = format!(
             "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            guid.data1, guid.data2, guid.data3,
-            guid.data4[0], guid.data4[1], guid.data4[2], guid.data4[3],
-            guid.data4[4], guid.data4[5], guid.data4[6], guid.data4[7],
+            guid.data1,
+            guid.data2,
+            guid.data3,
+            guid.data4[0],
+            guid.data4[1],
+            guid.data4[2],
+            guid.data4[3],
+            guid.data4[4],
+            guid.data4[5],
+            guid.data4[6],
+            guid.data4[7],
         );
         result = Err(anyhow!(
             "Error getting known folder for {{{}}}: {}",
@@ -178,7 +181,6 @@ pub fn get_known_folder(guid: GUID) -> anyhow::Result<Option<PathBuf>> {
 
     result
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -196,8 +198,15 @@ mod tests {
             (AlignedSlice(*b"\x00\xFF\x00\x00").0.as_slice(), 1),
             (AlignedSlice(*b"\xFF\x00\x00\x00").0.as_slice(), 1),
             (AlignedSlice(*b"\xFF\xFF\xFF\xFF\x00\x00").0.as_slice(), 2),
-            (AlignedSlice(*b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00").0.as_slice(), 13),
-            (AlignedSlice(*b"\x01\x01\x00\x00\xFF\xFF").0.as_slice(), 1)  // Extra content should be ignored!
+            (
+                AlignedSlice(
+                    *b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00",
+                )
+                .0
+                .as_slice(),
+                13,
+            ),
+            (AlignedSlice(*b"\x01\x01\x00\x00\xFF\xFF").0.as_slice(), 1), // Extra content should be ignored!
         ] {
             let actual_size = unsafe { wcstr_len(slice.as_ptr() as *const u16) };
             assert_eq!(actual_size, expected_len, "input={:?}", slice);
@@ -208,15 +217,37 @@ mod tests {
     fn test_wcstr_to_slice() {
         for (slice, expected) in [
             (AlignedSlice(*b"\x00\x00").0.as_slice(), Vec::<u16>::new()),
-            (AlignedSlice(*b"\x00\x00\x00\x00").0.as_slice(), Vec::<u16>::new()),  // Extra null bytes
-            (AlignedSlice(*b"\xFF\xFF\x00\x00").0.as_slice(), vec!(0xFFFFu16)),
-            (AlignedSlice(*b"\x00\xFF\x00\x00").0.as_slice(), vec!(0xFF00u16)),
-            (AlignedSlice(*b"\xFF\x00\x00\x00").0.as_slice(), vec!(0x00FFu16)),
-            (AlignedSlice(*b"\xFF\xFF\xFF\xFF\x00\x00").0.as_slice(), vec!(0xFFFFu16, 0xFFFFu16)),
             (
-                AlignedSlice(*b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00").0.as_slice(),
-                vec!(0x48u16, 0x65u16, 0x6Cu16, 0x6Cu16, 0x6Fu16, 0x2Cu16, 0x20u16, 0x57u16, 0x6Fu16, 0x72u16, 0x6Cu16, 0x64u16, 0x21u16)
-            )
+                AlignedSlice(*b"\x00\x00\x00\x00").0.as_slice(),
+                Vec::<u16>::new(),
+            ), // Extra null bytes
+            (
+                AlignedSlice(*b"\xFF\xFF\x00\x00").0.as_slice(),
+                vec![0xFFFFu16],
+            ),
+            (
+                AlignedSlice(*b"\x00\xFF\x00\x00").0.as_slice(),
+                vec![0xFF00u16],
+            ),
+            (
+                AlignedSlice(*b"\xFF\x00\x00\x00").0.as_slice(),
+                vec![0x00FFu16],
+            ),
+            (
+                AlignedSlice(*b"\xFF\xFF\xFF\xFF\x00\x00").0.as_slice(),
+                vec![0xFFFFu16, 0xFFFFu16],
+            ),
+            (
+                AlignedSlice(
+                    *b"H\x00e\x00l\x00l\x00o\x00,\x00 \x00W\x00o\x00r\x00l\x00d\x00!\x00\x00\x00",
+                )
+                .0
+                .as_slice(),
+                vec![
+                    0x48u16, 0x65u16, 0x6Cu16, 0x6Cu16, 0x6Fu16, 0x2Cu16, 0x20u16, 0x57u16,
+                    0x6Fu16, 0x72u16, 0x6Cu16, 0x64u16, 0x21u16,
+                ],
+            ),
         ] {
             let ptr = slice.as_ptr() as *const u16;
             let result_wcstr: &[u16] = unsafe { wcstr_to_slice(ptr) };
@@ -241,7 +272,10 @@ mod tests {
 
         let local_app_data = maybe_local_app_data.unwrap();
         let env_local_app_data = var_os("LOCALAPPDATA").map(|oss| PathBuf::from(oss));
-        assert_eq!(local_app_data, env_local_app_data, "Expected %LOCALAPPDATA% API result to match envvar");
+        assert_eq!(
+            local_app_data, env_local_app_data,
+            "Expected %LOCALAPPDATA% API result to match envvar"
+        );
 
         let maybe_program_data = get_program_data_folder();
         assert!(
@@ -252,7 +286,9 @@ mod tests {
 
         let program_data = maybe_program_data.unwrap();
         let env_program_data = var_os("ProgramData").map(|oss| PathBuf::from(oss));
-        assert_eq!(program_data, env_program_data, "Expected %PROGRAMDATA% API result to match envvar");
+        assert_eq!(
+            program_data, env_program_data,
+            "Expected %PROGRAMDATA% API result to match envvar"
+        );
     }
-
 }
