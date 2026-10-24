@@ -12,45 +12,57 @@ use aws_sdk_route53::types::{
     Change, ChangeAction, ChangeBatch, ChangeStatus, ResourceRecord, ResourceRecordSet, RrType,
 };
 use aws_sdk_route53::Client;
-use log::debug;
+use log::{debug, error};
 use tokio::time::{sleep, timeout};
 
 use crate::addresses::{Addresses, Route53AddressRecords};
 use crate::config::Config;
+use crate::host_names::{host_is_in_domain_normalized, normalize_host_name};
 
-fn host_is_in_domain(host_lowercase: &str, domain: &str) -> bool {
-    let domain_lowercase = domain.to_lowercase();
+// Helper to look up the zone ID for a given host name (i.e., if not provided by configuration or CLI arg).
+pub async fn find_zone_id(
+    client: &Client,
+    host_name: &str,
+    host_name_normalized: &str,
+) -> anyhow::Result<String> {
+    let mut best_match: Option<String> = None;
+    let mut best_match_len = 0;
 
-    if host_lowercase == domain_lowercase {
-        return true;
-    }
-    if host_lowercase.ends_with(domain_lowercase.as_str()) {
-        // While this would match "host.domain.com" in "domain.com" (which we want),
-        // it would also match "mydomain.com" against "domain.com" (which we don't want).
-        // So we must check that a dot ('.') immediately precedes the domain portion.
-        let host_lc_bytes = host_lowercase.as_bytes();
-        let domain_lc_bytes = domain_lowercase.as_bytes();
-        let maybe_separator = host_lc_bytes[host_lc_bytes.len() - domain_lc_bytes.len() - 1];
-        if maybe_separator == b'.' {
-            return true;
-        }
-    }
-
-    false
-}
-
-pub async fn get_zone_id(client: &Client, host_name_lowercase: &str) -> anyhow::Result<String> {
     let mut stream = client.list_hosted_zones().into_paginator().send();
     while let Some(page) = stream.next().await {
         let page_output = page.context("error calling Route53:ListHostedZones")?;
         for zone in page_output.hosted_zones.iter() {
-            if host_is_in_domain(host_name_lowercase, zone.name()) {
-                return Ok(zone.id.to_owned());
+            let zone_name_normalized = match normalize_host_name(zone.name()) {
+                Ok(name) => name,
+                Err(_e) => {
+                    continue; /* Silently ignore this one */
+                }
+            };
+            if best_match_len < zone_name_normalized.len()
+                && host_is_in_domain_normalized(host_name_normalized.as_ref(), zone.name())
+            {
+                // A new "best so far" has been found.
+
+                // Route53 returns the zone ID as "/hostedzone/ZONEID", so we strip the prefix for further use.
+                if let Some(zone_id) = zone.id.strip_prefix("/hostedzone/") {
+                    if zone_name_normalized.len() == host_name_normalized.len() {
+                        // This is actually the best *possible* match (exact zone-match).
+                        // Short-circuit any further checks.
+                        return Ok(zone_id.to_owned());
+                    } else {
+                        best_match = Some(zone_id.to_owned());
+                        best_match_len = zone_name_normalized.len();
+                    }
+                }
             }
         }
     }
 
-    Err(anyhow!("zone not found: \"{host_name_lowercase}\""))
+    if let Some(best_zone_id) = best_match {
+        Ok(best_zone_id)
+    } else {
+        Err(anyhow!("zone not found for host: \"{host_name}\""))
+    }
 }
 
 pub async fn get_resource_records(
@@ -58,8 +70,17 @@ pub async fn get_resource_records(
     host_name: &String,
     route53_zone_id: &str,
 ) -> anyhow::Result<Route53AddressRecords> {
-    // The `set_max_items(Some(2))` below IS SAFE, because we're only interested in 'A' and 'AAAA'
-    // records -- which are sorted *before* any other record types.
+    // The `ListResourceRecordSets` API call sorts records first by name (which is fixed in our
+    // case) and then by type. We only care about 'A' and 'AAAA' records, which also happen to
+    // be the first two record types supported by AWS Route53 (for a list of supported record
+    // types, see
+    // https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html).
+    //
+    // Additionally, Route53 also groups all records of a given type into a single RecordSet
+    // whenever "simple" routing policies are used (which this program requires).
+    //
+    // Therefore, we should *never* need to fetch any more than two items -- as that is the most
+    // needed to get all 'A' and 'AAAA' (simple routing) records.
     let response = client
         .list_resource_record_sets()
         .set_hosted_zone_id(Some(route53_zone_id.to_owned()))
@@ -73,6 +94,7 @@ pub async fn get_resource_records(
     let mut v6: Option<ResourceRecordSet> = None;
     for rrs in response.resource_record_sets {
         if &rrs.name != host_name {
+            // The RRS only *starts with* `host_name`; so we're done once we've found "something else",
             break;
         }
         match rrs.r#type {
@@ -99,6 +121,28 @@ pub async fn get_resource_records(
     Ok(Route53AddressRecords { v4, v6 })
 }
 
+pub fn get_ip_addresses_from_resource_record_set<IPTYPE>(rrs: &ResourceRecordSet) -> HashSet<IPTYPE>
+where
+    IPTYPE: FromStr + Ord + Hash + Eq,
+{
+    rrs
+        .resource_records()
+        .iter()
+        .filter_map(|rr| {
+            match rr.value().parse::<IPTYPE>() {
+                Ok(ip) => Some(ip),
+                Err(_e) => {
+                    error!(
+                        "Route53 resource record value could not be parsed as an IP address: '{}' (ignoring)",
+                        rr.value()
+                    );
+                    None
+                }
+            }
+        })
+        .collect::<HashSet<IPTYPE>>()
+}
+
 fn resource_record_set_matches_expected<IPTYPE>(
     rrs: &ResourceRecordSet,
     config: &Config,
@@ -111,7 +155,7 @@ where
 {
     match rrs.ttl {
         Some(ttl) => {
-            if ttl != config.route53_record_ttl as i64 {
+            if ttl != config.route53_record_ttl {
                 debug!(
                     "{log_prefix}: TTL mismatch (want={}, found={ttl})",
                     config.route53_record_ttl
@@ -128,35 +172,31 @@ where
         }
     };
 
-    for (is_some, name) in [
-        (rrs.alias_target.is_some(), "alias_target"),
-        (rrs.cidr_routing_config.is_some(), "cidr_routing_config"),
-        (rrs.failover.is_some(), "failover"),
-        (rrs.geo_location.is_some(), "geo_location"),
-        (rrs.multi_value_answer.is_some(), "multi_value_answer"),
-        (rrs.region.is_some(), "region"),
-        (rrs.set_identifier.is_some(), "set_identifier"),
-        (
-            rrs.traffic_policy_instance_id.is_some(),
-            "traffic_policy_instance_id",
-        ),
-    ] {
-        if is_some {
-            debug!("{log_prefix}: field is unexpectedly populated: {name}");
-            return false;
-        }
+    macro_rules! check_unexpected_fields {
+        ($rrs:expr, $log_prefix:expr, $( $field:ident ),* $(,)? ) => {
+            $(
+                if $rrs.$field.is_some() {
+                    debug!("{}: field is unexpectedly populated: {}", $log_prefix, stringify!($field));
+                    return false;
+                }
+            )*
+        };
     }
 
-    let rrs_ips: HashSet<IPTYPE> = rrs
-        .resource_records()
-        .iter()
-        .map(|rr| {
-            rr.value()
-                .parse::<IPTYPE>()
-                .expect("A/AAAA resource records should always parse as valid IP addresses")
-        })
-        .collect();
+    check_unexpected_fields!(
+        rrs,
+        log_prefix,
+        alias_target,
+        cidr_routing_config,
+        failover,
+        geo_location,
+        multi_value_answer,
+        region,
+        set_identifier,
+        traffic_policy_instance_id,
+    );
 
+    let rrs_ips = get_ip_addresses_from_resource_record_set(rrs);
     if &rrs_ips != desired_addresses {
         debug!("{log_prefix}: IP mismatch");
         return false;
@@ -181,14 +221,20 @@ where
 
     if desired_addresses.is_empty() {
         if let Some(current) = &current_address_records {
-            debug!("{log_prefix}: adding DELETE");
-            let chg = Change::builder()
-                .set_action(Some(ChangeAction::Delete))
-                .set_resource_record_set(Some(current.clone()))
-                .build()
-                .context("error building Route53:Change (deletion) object")?;
-            changes.push(chg);
-            changes_added = true;
+            if current
+                .resource_records
+                .as_ref()
+                .is_some_and(|rrs| !rrs.is_empty())
+            {
+                debug!("{log_prefix}: adding DELETE");
+                let chg = Change::builder()
+                    .set_action(Some(ChangeAction::Delete))
+                    .set_resource_record_set(Some(current.clone()))
+                    .build()
+                    .context("error building Route53:Change (deletion) object")?;
+                changes.push(chg);
+                changes_added = true;
+            }
         }
     } else if !current_address_records.as_ref().is_some_and(|rrs| {
         resource_record_set_matches_expected(rrs, config, desired_addresses, log_prefix)
@@ -205,7 +251,7 @@ where
         let rrs = ResourceRecordSet::builder()
             .set_name(Some(config.host_name_normalized.to_owned()))
             .set_type(Some(rr_type))
-            .set_ttl(Some(config.route53_record_ttl as i64))
+            .set_ttl(Some(config.route53_record_ttl))
             .set_resource_records(Some(v))
             .build()
             .context("error building Route53:ResourceRecordSet object")?;
@@ -233,11 +279,15 @@ pub enum UpdateHostResult {
 pub async fn update_host_addresses_if_different(
     r53: &aws_sdk_route53::Client,
     config: &Config,
+    route53_zone_id: &str,
     desired_addresses: &Addresses,
     current_address_records: &Route53AddressRecords,
 ) -> anyhow::Result<UpdateHostResult> {
+    // Build up the set of changes required (if any).
     let changes = {
         let mut changes = Vec::<Change>::new();
+
+        // Handle IPv4 addresses
         _compare_add_to_change_set(
             config,
             &desired_addresses.v4,
@@ -247,6 +297,8 @@ pub async fn update_host_addresses_if_different(
             "ipv4",
         )
         .context("error determining ipv4-specific changes")?;
+
+        // Handle IPv6 addresses
         _compare_add_to_change_set(
             config,
             &desired_addresses.v6,
@@ -256,36 +308,48 @@ pub async fn update_host_addresses_if_different(
             "ipv6",
         )
         .context("error determining ipv6-specific changes")?;
+
         changes
     };
 
+    // Early exit opportunity
     if changes.is_empty() {
         return Ok(UpdateHostResult::NotRequired);
     } else if config.no_update {
         return Ok(UpdateHostResult::UpdateSkipped);
     }
+
+    // Submit the change request
     let start_time = Instant::now();
     let expiry_time = start_time
         .checked_add(config.update_timeout.to_owned())
-        .expect("adding a duration to 'now' should always work");
+        .ok_or(anyhow!(
+            "Could not set timeout expiry (update_timeout is too large)"
+        ))?;
 
     let cb = ChangeBatch::builder()
         .set_changes(Some(changes))
         .build()
-        .context("error builing Route53:ChangeBatch object")?;
+        .context("error building Route53:ChangeBatch object")?;
     let change_fut = r53
         .change_resource_record_sets()
         .set_change_batch(Some(cb))
-        .set_hosted_zone_id(config.route53_zone_id.to_owned())
+        .set_hosted_zone_id(Some(route53_zone_id.to_string()))
         .send();
+
+    // Await response to the change request
     let timeout_fut = timeout(config.update_timeout.to_owned(), change_fut);
+    let response = match timeout_fut.await {
+        Ok(r) => r,
+        Err(_) => {
+            return Err(anyhow!("timed out waiting for change submission response"));
+        }
+    };
+    let mut ci = response?.change_info.ok_or(anyhow!(
+        "ChangeResourceRecordSets response unexpectedly lacks ChangeInfo field"
+    ))?;
 
-    let timeout_output = timeout_fut.await?;
-    let change_output = timeout_output?;
-
-    let mut ci = change_output
-        .change_info
-        .expect("Change-responses should include change-info");
+    // Wait for the change(s) to be synchronized with Route53
     while ci.status != ChangeStatus::Insync {
         debug!("Change is not yet synchronized.");
         let now = Instant::now();
@@ -304,10 +368,12 @@ pub async fn update_host_addresses_if_different(
             .send()
             .await
             .context("error calling Route53:GetChange")?;
-        ci = output
-            .change_info
-            .expect("Change-lookups should return change-info")
+
+        ci = output.change_info.ok_or(anyhow!(
+            "GetChange route53 response unexpectedly lacks ChangeInfo"
+        ))?
     }
+    debug!("Route53 now reports that the change has been synchronized.");
 
     Ok(UpdateHostResult::UpdateSuccessful)
 }
@@ -332,47 +398,6 @@ mod tests {
     });
 
     #[test]
-    fn test_host_in_domain() {
-        let tests = [
-            ("example.com", "example.com"),
-            ("example.com", "com"),
-            ("www.example.com", "com"),
-            ("a.b.c.d.e.example.com", "example.com"),
-            ("www.example.com", "example.com"),
-            ("example.com", "EXAMPLE.COM"),
-            ("example.com", "COM"),
-            ("www.example.com", "COM"),
-            ("www.example.com", "EXAMPLE.COM"),
-        ];
-        for (hostname, domain) in tests {
-            assert!(
-                host_is_in_domain(hostname, domain),
-                "host=\"{0}\", domain=\"{1}\"",
-                hostname,
-                domain
-            );
-        }
-    }
-
-    #[test]
-    fn test_host_not_in_domain() {
-        let tests = [
-            ("com", "example.com"),
-            ("wwwwww.example.com", "www.example.com"),
-            ("myexample.com", "example.com"),
-            ("www.example.com", "some_domain.org"),
-        ];
-        for (hostname, domain) in tests {
-            assert!(
-                !host_is_in_domain(hostname, domain),
-                "host=\"{0}\", domain=\"{1}\"",
-                hostname,
-                domain
-            );
-        }
-    }
-
-    #[test]
     fn test_rrset_matches_expected() {
         let test_config = &*TEST_CONFIG;
 
@@ -385,7 +410,7 @@ mod tests {
         let rrs = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64)
+            .ttl(test_config.route53_record_ttl)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])
@@ -423,7 +448,7 @@ mod tests {
         let rrs = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64 + 1)
+            .ttl(test_config.route53_record_ttl + 1)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])
@@ -486,7 +511,7 @@ mod tests {
         let rrs_base = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64)
+            .ttl(test_config.route53_record_ttl)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])
@@ -625,7 +650,7 @@ mod tests {
         let rrs_base = ResourceRecordSet::builder()
             .name(test_config.host_name.clone())
             .r#type(RrType::A)
-            .ttl(test_config.route53_record_ttl as i64)
+            .ttl(test_config.route53_record_ttl)
             .resource_records(
                 ResourceRecord::builder()
                     .value(test_ip_strs[0])

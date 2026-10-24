@@ -128,9 +128,15 @@ The following example shows one way to create an IAM user with limited permissio
     1. Make note of the "Access key" and the "Secret access key", or use the "Download .csv file" button — you'll need these to setup the client configuration (below).
        > Always keep your AWS IAM credentials confidential!
 
-## Client configuration
+## Running
 
-A template configuration file is available at [`example/ddns-route53.conf`](example/ddns-route53.conf). This file uses a [TOML](https://toml.io/en/)-based format. You should copy this file to another location and edit it to match your needs.
+### Configuration
+
+`ddns-route53` requires a number of configuration items to function. Most options can be provided either on the command line or in a configuration file. Any options provided both on the command line _and_ in the configuration file will end up preferring the command line value.
+
+### Config file
+
+The easiest way to start out is to copy the template configuration file from [`example/ddns-route53.conf`](example/ddns-route53.conf) to another location and edit it to match your needs. This file uses a [TOML](https://toml.io/en/)-based format.
 
 At a minimum, you should set the following:
  * The `host_name` value, which should be a fully-qualified domain name within a [Route53](https://aws.amazon.com/route53/)-hosted zone. 
@@ -140,20 +146,11 @@ At a minimum, you should set the following:
 
 Various other configuration options exist; see [`example/ddns-route53.conf`](example/ddns-route53.conf) for more information.
 
-## Running
+### Command line options
 
-### Configuration file path
+Running `ddns-route53 -h` will show useful help for the tool. 
 
-`ddns-route53` is usually setup with a configuration file -- so it needs to know where it is located in order to run. You can do this via either of two ways:
- 1. Provide the path to the file explicitly, or
- 1. Rely on the utility locating the configuration file automatically.
-
-To provide the path explicitly, invoke the command with the `-c` argument followed by the path. For example:
-```
-ddns-route53 -c /path/to/config/file
-```
-
-If an explicit path is not given, the utility will automatically use the first file to be found in one of the following locations:
+If run without any options, it will search for a configuration file to use in the following locations:
  1. `ddns-route53.conf` (i.e., a file in the current working directory)
  1. If running on a Posix system (e.g., Linux, Mac, or other Unix):
     1. `~/.config/ddns-route53.conf`
@@ -166,7 +163,7 @@ If an explicit path is not given, the utility will automatically use the first f
     1. `%LOCALAPPDATA%\ddns-route53.conf`
     1. `%ProgramData%\ddns-route53.conf`
 
-Alternatively, you can also explicitly specify _no_ configuration file by passing `-c -`. (This forces use of CLI options only.)
+You can also pass a specific path using the `-c` option; for example, `ddns-route53 -c /path/to/my/ddns-route53.conf`. (The `-c` option also accepts a simple `-` argument, which prevents it from searching for the configuration file and makes it use CLI options only.)
 
 ### Runtime behavior
 
@@ -175,7 +172,6 @@ This tool is a simple, "fire and forget" utility. That is, it checks your curren
 If you want to run it periodically, you can use a third-party scheduler to do so. For example, the Windows Task Scheduler, Mac iCal, Mac launchd, Unix/Linux cron jobs, and Linux systemd can all be configured to run `ddns-route53` periodically.
 
 See the `example` folder in the source distribution for available scheduling examples.
-
 
 ## License
 

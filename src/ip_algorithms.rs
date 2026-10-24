@@ -2,6 +2,7 @@
 
 use std::cmp::Eq;
 use std::collections::HashSet;
+use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::marker::Send;
@@ -13,18 +14,20 @@ use std::time::Duration;
 use std::vec::Vec;
 
 use anyhow::{anyhow, Context};
-use encoding_rs::{DecoderResult, Encoding, WINDOWS_1252};
-use igd_next::{search_gateway, SearchOptions};
+use encoding_rs::mem::decode_latin1;
+use encoding_rs::{DecoderResult, Encoding};
+use igd_next::{aio::tokio::search_gateway, SearchOptions};
 use log::{debug, error, trace, warn};
 use mime::Mime;
 use netdev::{get_default_interface, Interface};
+use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::task::spawn_blocking;
-use tokio::time::sleep;
 use tokio_stream::StreamExt;
+
+use crate::os_helpers::PlatformStringDecoder; // Import trait
 
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
@@ -39,6 +42,7 @@ fn serde_default_algo_timeout() -> Duration {
     Duration::from_secs(DEFAULT_ALGO_TIMEOUT_SECS)
 }
 
+// Convert a number of seconds as f64 to/from a duration
 mod serde_duration_f64 {
     use serde::de::Error;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -64,6 +68,7 @@ mod serde_duration_f64 {
     }
 }
 
+// Convert an identifier (string) to/from an encoding
 mod serde_encoding {
     use encoding_rs::Encoding;
     use serde::de::Error;
@@ -78,7 +83,7 @@ mod serde_encoding {
 
             // encoding_rs seems not to recognize some common UTF-16 aliases, so we
             // give it a hand here with a few of our own, custom translations.
-            let sb: &[u8] = match sb {
+            let sb: &[u8] = match sb.to_ascii_lowercase().as_slice() {
                 b"utf16" => b"utf-16",
                 b"utf16le" | b"utf-16-le" => b"utf-16le",
                 b"utf16be" | b"utf-16-be" => b"utf-16be",
@@ -131,8 +136,11 @@ mod serde_url {
 
 pub trait IpAddressV4orV6: Copy + Debug + Display + Eq + FromStr + Hash + Send {
     fn is_global(&self) -> bool;
+
     fn type_name() -> &'static str;
+
     async fn get_default_public_ip() -> anyhow::Result<Vec<Self>>;
+
     async fn get_igd_public_ip(timeout: &Duration) -> anyhow::Result<Vec<Self>>;
 }
 
@@ -176,49 +184,30 @@ impl IpAddressV4orV6 for Ipv4Addr {
             .map_err(anyhow::Error::msg)
             .context("failed to determine default network interface")?;
 
-        let mut result = Vec::<Self>::new();
-        for network in &default_interface.ipv4 {
-            let ip_net_addr = network.addr();
-            if IpAddressV4orV6::is_global(&ip_net_addr) {
-                result.push(ip_net_addr);
-            } else {
-                debug!(
-                    "Ignoring address [{}] on default interface: address is non-global",
-                    ip_net_addr
-                );
-            }
-        }
+        let result: Vec<Self> = default_interface
+            .ipv4
+            .iter()
+            .map(|net| net.addr())
+            .collect();
         Ok(result)
     }
 
     async fn get_igd_public_ip(timeout: &Duration) -> anyhow::Result<Vec<Self>> {
-        let timeout = *timeout; // Make local copy prior to move
+        let search_option = {
+            let mut opts = SearchOptions::default();
+            opts.timeout = Some(*timeout);
+            opts
+        };
+        let gateway = search_gateway(search_option).await?;
+        let ip = gateway
+            .get_external_ip()
+            .await
+            .context("error parsing external IP from internet gateway")?;
 
-        // Spawn this into a thread (since it is blocking code)
-        spawn_blocking(move || {
-            let search_option = SearchOptions {
-                timeout: Some(timeout),
-                ..Default::default()
-            };
-            let gateway =
-                search_gateway(search_option).context("error finding internet gateway")?;
-
-            let ip = gateway
-                .get_external_ip()
-                .context("error parsing external IP from internet gateway")?;
-            if let IpAddr::V4(v4) = ip {
-                if <Ipv4Addr as IpAddressV4orV6>::is_global(&v4) {
-                    return Ok(vec![v4]);
-                } else {
-                    debug!(
-                        "Ignoring address [{}] reported by internet gateway: address is non-global",
-                        v4
-                    );
-                }
-            }
-            Ok(Vec::<Ipv4Addr>::new())
-        })
-        .await?
+        if let IpAddr::V4(ipv4) = ip {
+            return Ok(vec![ipv4]);
+        }
+        Ok(Vec::<Ipv4Addr>::new())
     }
 }
 
@@ -278,18 +267,11 @@ impl IpAddressV4orV6 for Ipv6Addr {
             .map_err(anyhow::Error::msg)
             .context("failed to determine default network interface")?;
 
-        let mut result = Vec::<Self>::new();
-        for network in &default_interface.ipv6 {
-            let ip_net_addr = network.addr();
-            if IpAddressV4orV6::is_global(&ip_net_addr) {
-                result.push(ip_net_addr);
-            } else {
-                debug!(
-                    "Ignoring address [{}] on default interface: address is non-global",
-                    ip_net_addr
-                );
-            }
-        }
+        let result: Vec<Self> = default_interface
+            .ipv6
+            .iter()
+            .map(|net| net.addr())
+            .collect();
         Ok(result)
     }
 
@@ -300,22 +282,6 @@ impl IpAddressV4orV6 for Ipv6Addr {
     }
 }
 
-// This helper ensures AlgorithmSpecification objects are serialized as inline tables (similar to JSON objects),
-// rather (INI-style) tables. This is intended for readability of trace output.
-// fn serialize_as_toml_value<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-// where
-//     S: Serializer,
-//     T: Serialize,
-//     //<S as Serializer>::Error: From<toml::ser::Error>
-// {
-//     use serde::ser::Error;
-
-//     let mut buffer = String::with_capacity(256);
-//     let ser = toml::ser::ValueSerializer::new(&mut buffer);
-//     value.serialize(ser).map_err(S::Error::custom)?;
-//     serializer.serialize_str(buffer.as_str())
-// }
-
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum AlgorithmSpecification {
@@ -323,7 +289,10 @@ pub enum AlgorithmSpecification {
     None,
 
     #[serde(rename = "default_public_ip")]
-    DefaultPublicIp,
+    DefaultPublicIp {
+        #[serde(default)]
+        skip_empty_result: bool,
+    },
 
     #[serde(rename = "internet_gateway_protocol")]
     InternetGatewayProtocol {
@@ -333,6 +302,9 @@ pub enum AlgorithmSpecification {
             default = "serde_default_algo_timeout"
         )]
         timeout: Duration,
+
+        #[serde(default)]
+        skip_empty_result: bool,
     },
 
     #[serde(rename = "web_service")]
@@ -349,6 +321,9 @@ pub enum AlgorithmSpecification {
 
         #[serde(default, with = "serde_encoding")]
         default_encoding: Option<&'static Encoding>,
+
+        #[serde(default)]
+        skip_empty_result: bool,
     },
 
     #[serde(rename = "plugin")]
@@ -364,6 +339,9 @@ pub enum AlgorithmSpecification {
 
         #[serde(default, with = "serde_encoding")]
         encoding: Option<&'static Encoding>,
+
+        #[serde(default)]
+        skip_empty_result: bool,
     },
 }
 
@@ -397,7 +375,10 @@ impl AlgorithmSpecification {
                         ));
                     }
                 }
-                AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
+                AlgorithmSpecification::InternetGatewayProtocol {
+                    timeout: _,
+                    skip_empty_result: _,
+                } => {
                     if for_ipv6 {
                         return Err(anyhow!("algorithm '{algo_name}' cannot be used with IPv6"));
                     }
@@ -416,28 +397,59 @@ impl AlgorithmSpecification {
         T: IpAddressV4orV6,
         <T as FromStr>::Err: Display,
     {
-        match self {
+        let result_can_be_skipped: bool;
+        let algo_result = match self {
             AlgorithmSpecification::None => {
                 panic!("Unreachable code was somehow reached")
             }
-            AlgorithmSpecification::DefaultPublicIp => T::get_default_public_ip().await,
-            AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
+            AlgorithmSpecification::DefaultPublicIp { skip_empty_result } => {
+                result_can_be_skipped = *skip_empty_result;
+                T::get_default_public_ip().await
+            }
+            AlgorithmSpecification::InternetGatewayProtocol {
+                timeout,
+                skip_empty_result,
+            } => {
+                result_can_be_skipped = *skip_empty_result;
                 T::get_igd_public_ip(timeout).await
             }
             AlgorithmSpecification::WebService {
                 url,
                 timeout,
                 default_encoding,
-            } => get_web_service_ip::<T>(url, timeout, *default_encoding).await,
+                skip_empty_result,
+            } => {
+                result_can_be_skipped = *skip_empty_result;
+                get_web_service_ip::<T>(url, timeout, *default_encoding).await
+            }
             AlgorithmSpecification::Plugin {
                 command,
                 timeout,
                 encoding,
-            } => get_plugin_ip::<T>(command, timeout, *encoding).await,
+                skip_empty_result,
+            } => {
+                result_can_be_skipped = *skip_empty_result;
+                get_plugin_ip::<T>(command, timeout, *encoding).await
+            }
+        }?;
+
+        let algo_result_only_globals: Vec<T> = algo_result
+            .iter()
+            .filter(|ip| (*ip).is_global())
+            .map(|ip| *ip)
+            .collect();
+
+        if algo_result_only_globals.is_empty() && !result_can_be_skipped {
+            return Err(anyhow!(
+                "algorithm '{self}' did not find any global addresses"
+            ));
         }
+        Ok(algo_result_only_globals)
     }
 
-    pub async fn get_public_ip_address_for_algos<T>(algos: &[AlgorithmSpecification]) -> HashSet<T>
+    pub async fn get_public_ip_address_for_algos<T>(
+        algos: &[AlgorithmSpecification],
+    ) -> anyhow::Result<HashSet<T>>
     where
         T: IpAddressV4orV6,
         <T as FromStr>::Err: Display,
@@ -451,12 +463,8 @@ impl AlgorithmSpecification {
             match algo_result {
                 Ok(ips) => {
                     debug!("{ip_version}_algorithms[{idx}]: got addresses: {:?}", &ips);
-                    if ips.is_empty() {
-                        debug!("{ip_version}_algorithms[{idx}]: skipping empty result");
-                    } else {
-                        let ips_set: HashSet<_> = ips.into_iter().collect();
-                        return ips_set;
-                    }
+                    let ips_set: HashSet<_> = ips.into_iter().collect();
+                    return Ok(ips_set);
                 }
                 Err(msg) => {
                     warn!("{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
@@ -464,11 +472,14 @@ impl AlgorithmSpecification {
             };
         }
 
-        if !algos.is_empty() {
-            warn!("{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        if algos.is_empty() {
+            warn!("{ip_version}_algorithms: no algorithms are configured");
+            Ok(HashSet::new())
+        } else {
+            Err(anyhow!(
+                "{ip_version}_algorithms: all configured algorithms failed!"
+            ))
         }
-
-        HashSet::<T>::new()
     }
 
     #[cfg(test)]
@@ -479,7 +490,10 @@ impl AlgorithmSpecification {
     #[cfg(test)]
     pub fn supports_ipv6(&self) -> bool {
         match self {
-            AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => false,
+            AlgorithmSpecification::InternetGatewayProtocol {
+                timeout: _,
+                skip_empty_result: _,
+            } => false,
             _ => true,
         }
     }
@@ -503,31 +517,66 @@ impl Display for AlgorithmSpecification {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Self::None => f.write_str("none"),
-            Self::DefaultPublicIp => f.write_str("default_public_ip"),
-            Self::InternetGatewayProtocol { timeout: _ } => write!(f, "internet_gateway_protocol"),
+            Self::DefaultPublicIp {
+                skip_empty_result: _,
+            } => f.write_str("default_public_ip"),
+            Self::InternetGatewayProtocol {
+                timeout: _,
+                skip_empty_result: _,
+            } => {
+                write!(f, "internet_gateway_protocol")
+            }
             Self::WebService {
                 url,
                 timeout: _,
                 default_encoding: _,
+                skip_empty_result: _,
             } => write!(f, "web_service:\"{}\"", url.as_str()),
             Self::Plugin {
                 command,
                 timeout: _,
                 encoding: _,
+                skip_empty_result: _,
             } => write!(f, "plugin:\"{command}\""),
         }
     }
 }
 
 // Helper to download a document from a URL
-async fn get_web_service_document(
+async fn get_web_service_document<const WITH_REPLACEMENT: bool>(
     client: &Client,
     url: &Url,
     timeout: &Duration,
     default_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
-    let request = client.get(url.clone()).timeout(*timeout).send();
-    let response = request.await.context("error fetching url")?;
+    let response = match client.get(url.clone()).timeout(*timeout).send().await {
+        Ok(r) => match r.error_for_status() {
+            Ok(r) => r,
+            Err(e) => {
+                return if let Some(code) = e.status() {
+                    Err(anyhow!(
+                        "Error fetching {}: {} {}",
+                        url.to_string(),
+                        code.as_str(),
+                        code.canonical_reason().unwrap_or("")
+                    ))
+                } else {
+                    Err(anyhow!("Error fetching {}: unknown error", url.to_string()))
+                };
+            }
+        },
+        Err(e) => {
+            return if let Some(src) = e.source() {
+                Err(anyhow!("Error fetching {}: {src:?}", url.to_string()))
+            } else {
+                Err(anyhow!(
+                    "Error fetching {}: {}",
+                    url.to_string(),
+                    e.to_string()
+                ))
+            };
+        }
+    };
     let mut content_length: u64 = 0;
 
     if let Some(cl) = response.content_length() {
@@ -561,7 +610,7 @@ async fn get_web_service_document(
 
     let encoding = if let Some(name) = encoding_name {
         match Encoding::for_label(name.as_bytes()) {
-            Some(e) => e,
+            Some(e) => Some(e),
             None => {
                 return Err(anyhow!("unknown encoding: \"{name}\""))?;
             }
@@ -574,13 +623,12 @@ async fn get_web_service_document(
                     "Using configuration-provided default_encoding: {}",
                     e.name()
                 );
-                e
             }
             None => {
                 debug!("Using HTTP default encoding: iso-8859-1");
-                WINDOWS_1252
             }
         }
+        default_encoding
     };
 
     let mut body_binary = Vec::<u8>::new();
@@ -593,7 +641,7 @@ async fn get_web_service_document(
         let len_after_append = item.len() + body_binary.len();
         if MAX_WEB_SERVICE_DOCUMENT_LENGTH < (len_after_append as u64) {
             return Err(anyhow!(
-                "url \"{}\": body length ({}) too long (max={})",
+                "url \"{}\": body length ({}+) too long (max={})",
                 url.as_str(),
                 len_after_append,
                 MAX_WEB_SERVICE_DOCUMENT_LENGTH
@@ -602,21 +650,33 @@ async fn get_web_service_document(
         body_binary.extend_from_slice(item.as_ref());
     }
 
-    match encoding
-        .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
-        .map(|s| s.into_owned())
-    {
-        Some(decoded) => Ok(decoded),
-        None => {
-            error!(
-                "web-service response could not be decoded; value: {:X?}",
-                body_binary.as_slice()
-            );
-            Err(anyhow!(
-                "failed to decode output with \"{}\"",
-                encoding.name()
-            ))
+    if let Some(encoding) = encoding {
+        if WITH_REPLACEMENT {
+            Ok(encoding
+                .decode_without_bom_handling(body_binary.as_slice())
+                .0
+                .to_string())
+        } else {
+            match encoding
+                .decode_without_bom_handling_and_without_replacement(body_binary.as_slice())
+            {
+                Some(r) => Ok(r.to_string()),
+                None => {
+                    error!(
+                        "web-service response could not be decoded; value: {:X?}",
+                        body_binary.as_slice()
+                    );
+                    Err(anyhow!(
+                        "failed to decode output with \"{}\"",
+                        encoding.name()
+                    ))
+                }
+            }
         }
+    } else {
+        // Use the HTTP default (ISO 8859-1). Since every possible byte is translated one-for-one to a code-point,
+        // there is no possibility of a decoding failure here.
+        Ok(decode_latin1(body_binary.as_slice()).to_string())
     }
 }
 
@@ -633,13 +693,15 @@ where
         .as_ref()
         .context("failed to initialize web client")?;
 
-    let body = get_web_service_document(client, url, timeout, default_encoding).await?;
+    let body = get_web_service_document::<true>(client, url, timeout, default_encoding).await?;
 
     let mut result = Vec::<T>::new();
     for line in body.as_str().lines() {
         trace!("web service result: {:?}", line);
-        let ip = match T::from_str(line) {
-            Ok(result) => result,
+        match T::from_str(line) {
+            Ok(ip) => {
+                result.push(ip);
+            }
             Err(e) => {
                 return Err(anyhow!(
                     "failed to parse address from web service: {}",
@@ -647,16 +709,6 @@ where
                 ))
             }
         };
-
-        if ip.is_global() {
-            result.push(ip)
-        } else {
-            debug!(
-                "Ignoring address [{}] reported by web-service:{}: address is non-global",
-                ip,
-                url.as_str()
-            );
-        }
     }
 
     Ok(result)
@@ -798,14 +850,16 @@ fn decode_bytes_with_encoding(data: &[u8], encoding: &'static Encoding) -> anyho
     }
 }
 
-fn decode_bytes_with_encoding_fallback(
+fn decode_plugin_output(
     data: &[u8],
     configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
-    const HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
-
-    #[cfg(not(all(windows, feature = "native-decode")))]
-    let fallback_encoding = encoding_rs::UTF_8;
+    const UTF16_HIGH_BYTE_IDX: usize = if cfg!(target_endian = "little") { 1 } else { 0 };
+    const UTF16_NATIVE: &'static Encoding = if cfg!(target_endian = "little") {
+        encoding_rs::UTF_16LE
+    } else {
+        encoding_rs::UTF_16BE
+    };
 
     if data.is_empty() {
         Ok(String::new())
@@ -821,63 +875,19 @@ fn decode_bytes_with_encoding_fallback(
             encoding.name()
         );
         decode_bytes_with_encoding(&data[bom_len_bytes..], encoding)
-    } else if HIGH_BYTE_IDX < data.len() && data[HIGH_BYTE_IDX] == 0 {
-        if cfg!(target_endian = "little") {
-            debug!(
-                "Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16LE"
-            );
-            decode_bytes_with_encoding(data, encoding_rs::UTF_16LE)
-        } else {
-            debug!(
-                "Found NULL-byte offset {HIGH_BYTE_IDX} in plugin output; using encoding: UTF_16BE"
-            );
-            decode_bytes_with_encoding(data, encoding_rs::UTF_16BE)
-        }
+    } else if UTF16_HIGH_BYTE_IDX < data.len() && data[UTF16_HIGH_BYTE_IDX] == 0 {
+        debug!(
+            "Found NULL-byte offset {UTF16_HIGH_BYTE_IDX} in plugin output; using encoding: {}",
+            UTF16_NATIVE.name()
+        );
+        decode_bytes_with_encoding(data, UTF16_NATIVE)
     } else {
-        #[cfg(feature = "native-decode")]
-        {
-            #[cfg(unix)]
-            {
-                debug!("No encoding could be detected from plugin output; trying current code set instead");
-                if let Some(active_code_set) = crate::os_helpers::posix::get_active_code_set() {
-                    crate::os_helpers::posix::convert_code_set_slice_to_string(
-                        active_code_set.as_str(),
-                        data,
-                    )
-                } else {
-                    debug!(
-                        "No code set found; trying fallback {0} instead",
-                        fallback_encoding.name()
-                    );
-                    decode_bytes_with_encoding(data, fallback_encoding)
-                }
-            }
-
-            #[cfg(windows)]
-            {
-                debug!("No encoding could be detected from plugin output; trying active code page instead");
-                let active_code_page = crate::os_helpers::windows::get_active_code_page();
-                crate::os_helpers::windows::convert_code_page_slice_to_string(
-                    active_code_page,
-                    data,
-                )
-            }
-
-            #[cfg(not(any(unix, windows)))]
-            {
-                debug!("No encoding could be detected from plugin output, and no native encoding detection available on this platform; trying fallback {0} instead", fallback_encoding.name());
-                decode_bytes_with_encoding(data, fallback_encoding)
-            }
-        }
-
-        #[cfg(not(feature = "native-decode"))]
-        {
-            debug!(
-                "No encoding could be detected from plugin output; trying fallback {0} instead",
-                fallback_encoding.name()
-            );
-            decode_bytes_with_encoding(data, fallback_encoding)
-        }
+        let native_decoder = crate::os_helpers::NativeDecoder::new();
+        debug!(
+            "No encoding could be detected from plugin output; trying {} instead",
+            native_decoder.name()
+        );
+        native_decoder.decode(data)
     }
 }
 
@@ -886,64 +896,92 @@ async fn get_plugin_output(
     timeout: &Duration,
     configuration_encoding: Option<&'static Encoding>,
 ) -> anyhow::Result<String> {
-    let mut command_obj = build_command_object(command)?;
+    let mut command_obj = CommandWrap::from(build_command_object(command)?);
+    #[cfg(unix)]
+    {
+        command_obj.wrap(process_wrap::tokio::ProcessGroup::leader());
+    }
+    #[cfg(windows)]
+    {
+        command_obj.wrap(process_wrap::tokio::JobObject);
+    }
+    command_obj.wrap(KillOnDrop);
 
-    let mut child = command_obj.spawn().expect("plugin failed to start");
-    drop(child.stdin.take());
+    let mut child = command_obj.spawn().context("plugin failed to start")?;
 
-    let stdout = child.stdout.take().expect("failed to unwrap stdout pipe");
+    drop(child.stdin().take());
+
+    let mut stdout = child
+        .stdout()
+        .take()
+        .ok_or(anyhow!("Could not get plugin stdout"))?;
     let read_stdout_fut = tokio::spawn(async move {
-        let mut buff = Vec::new();
-        let _ = stdout
-            .take(MAX_PLUGIN_DOCUMENT_LENGTH)
-            .read_to_end(&mut buff)
-            .await;
-
-        if buff.len() == (MAX_PLUGIN_DOCUMENT_LENGTH as usize) {
-            return Err(anyhow!(
-                "plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"
-            ));
+        let mut buf = [0u8; 4096];
+        let mut stdout_binary = Vec::<u8>::new();
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    stdout_binary.extend_from_slice(&buf[..n]);
+                    if (MAX_PLUGIN_DOCUMENT_LENGTH as usize) < stdout_binary.len() {
+                        return Err(anyhow!(
+                            "plugin output must be less than {MAX_PLUGIN_DOCUMENT_LENGTH} bytes"
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
         }
-
-        Ok(buff)
+        Ok(stdout_binary)
     });
 
-    let mut succeeded = true;
-    tokio::select! {
-        es = child.wait() => {
-            let child_exit_status = es.expect("failed to unwrap exit status");
-            if let Some(code) = child_exit_status.code() {
-                if code == 0 {
-                    debug!("plugin exitted with RC={code}");
+    let stdout_binary: Vec<u8>;
+    loop {
+        tokio::select! {
+            res = read_stdout_fut => {
+                match res {
+                    Ok(Ok(output)) => { stdout_binary = output; break; },
+                    Ok(Err(e)) => { return Err(anyhow!("plugin error: {e:?}")); },
+                    Err(e) => { return Err(anyhow!("error waiting on plugin reader: {e:?}")); }
                 }
-                else {
-                    error!("plugin exitted with RC={code}");
-                    succeeded = false;
-                }
+            },
+            _ = tokio::time::sleep(*timeout) => {
+                let _ = child.start_kill();
+                drop(child);
+                return Err(anyhow!("plugin timed out"));
             }
-            else {
-                error!("plugin exitted abnormally");
-                succeeded = false;
-            }
-        }
-        _ = sleep(*timeout) => {
-            drop(read_stdout_fut);
-            child.kill().await.expect("failed to kill child after timeout");
-            return Err(anyhow!("plugin timed out"));
         }
     }
 
-    let stdout_binary = read_stdout_fut
-        .await
-        .expect("failed to unwrap stdout buffer content")?;
+    let exit_status = match child.wait().await {
+        Ok(es) => es,
+        Err(e) => {
+            return Err(anyhow!("error fetching plugin exit status: {e:?}"));
+        }
+    };
 
-    let stdout_decoded =
-        decode_bytes_with_encoding_fallback(stdout_binary.as_slice(), configuration_encoding)?;
-    trace!("plugin output: {:?}", stdout_decoded.as_str());
-    if succeeded {
-        Ok(stdout_decoded)
+    let mut error_msg: Option<String> = None;
+    if let Some(code) = exit_status.code() {
+        if code == 0 {
+            debug!("plugin exitted with RC={code}");
+        } else {
+            error!("plugin exitted with RC={code}");
+            error_msg = Some(format!("plugin exitted with RC={code}"));
+        }
     } else {
-        Err(anyhow!("plugin failed"))
+        error!("plugin exitted abnormally");
+        error_msg = Some("plugin exitted abnormally".to_string());
+    }
+
+    let stdout_decoded = decode_plugin_output(stdout_binary.as_slice(), configuration_encoding)?;
+    trace!("plugin output: {:?}", stdout_decoded.as_str());
+
+    if let Some(error_msg) = error_msg {
+        Err(anyhow!(error_msg))
+    } else {
+        Ok(stdout_decoded)
     }
 }
 
@@ -960,8 +998,10 @@ where
 
     let mut result = Vec::<T>::new();
     for line in output.as_str().lines() {
-        let ip = match T::from_str(line) {
-            Ok(result) => result,
+        match T::from_str(line) {
+            Ok(ip) => {
+                result.push(ip);
+            }
             Err(e) => {
                 return Err(anyhow!(
                     "failed to parse IP address from plugin: {}",
@@ -969,12 +1009,6 @@ where
                 ))
             }
         };
-
-        if <T as IpAddressV4orV6>::is_global(&ip) {
-            result.push(ip);
-        } else {
-            debug!("Ignoring address [{ip}] reported by plugin: address is non-global");
-        }
     }
 
     Ok(result)
@@ -984,6 +1018,9 @@ where
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    use httpmock::prelude::*;
+    use ipnet::{IpAdd, IpSub, Ipv4Net, Ipv6Net};
 
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeDuration {
@@ -1074,15 +1111,6 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_deserialize_encoding_none() {
-    //     let toml_value: &str = "{}";
-    //     let maybe_struct = toml::from_str::<SerdeEncoding>(toml_value);
-    //     assert!(maybe_struct.is_ok(), "err: {:?}", maybe_struct.unwrap_err());
-    //     let result = maybe_struct.unwrap();
-    //     assert_eq!(result.encoding, None, "{:?}", toml_value);
-    // }
-
     #[derive(Deserialize, Serialize, Debug)]
     struct SerdeUrl {
         #[serde(with = "serde_url")]
@@ -1118,19 +1146,107 @@ mod tests {
     }
 
     #[test]
-    fn test_get_web_services_document() {
+    fn test_ipv4_is_global() {
+        for (cidr, usage) in [
+            ("10.0.0.0/8", "private range"),
+            ("172.16.0.0/12", "private range"),
+            ("192.168.0.0/16", "private range"),
+            ("100.64.0.0/10", "Carrier-grade NAT"),
+            ("127.0.0.0/8", "loopback"),
+            ("169.254.0.0/16", "APIPA"),
+            ("192.0.0.0/24", "IETF protocols"),
+            ("192.0.2.0/24", "TEST-NET1"),
+            ("198.18.0.0/15", "Benchmark testing"),
+        ] {
+            let net = Ipv4Net::from_str(cidr).unwrap();
+
+            assert!(
+                !IpAddressV4orV6::is_global(&net.addr()),
+                "{}: expect non_global: {usage}",
+                net.addr()
+            );
+            assert!(
+                !IpAddressV4orV6::is_global(&net.broadcast()),
+                "{}: expect non_global: {usage}",
+                net.broadcast()
+            );
+
+            // The following assumes none of the non-global ranges directly butt up against another.
+            let before_base = net.addr().saturating_sub(1);
+            assert!(
+                IpAddressV4orV6::is_global(&before_base),
+                "{}: expect global: (before) {usage}",
+                before_base
+            );
+
+            let after_broadcast = net.broadcast().saturating_add(1);
+            assert!(
+                IpAddressV4orV6::is_global(&after_broadcast),
+                "{}: expect global: (after) {usage}",
+                after_broadcast
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipv6_is_global() {
+        for (cidr, usage, check_before_after) in [
+            ("fe80::/10", "link-local", true),
+            ("fc00::/7", "unique local addresses", true),
+            ("::1/128", "loopback", false),
+            ("::/128", "unspecified (all zeroes)", false),
+        ] {
+            let net = Ipv6Net::from_str(cidr).unwrap();
+
+            assert!(
+                !IpAddressV4orV6::is_global(&net.addr()),
+                "{}: expect non_global: {usage}",
+                net.addr()
+            );
+            assert!(
+                !IpAddressV4orV6::is_global(&net.broadcast()),
+                "{}: expect non_global: {usage}",
+                net.broadcast()
+            );
+
+            if check_before_after {
+                // The following assumes none of the non-global ranges directly butt up against another.
+                let before_base = net.addr().saturating_sub(1);
+                assert!(
+                    IpAddressV4orV6::is_global(&before_base),
+                    "{}: expect global: (before) {usage}",
+                    before_base
+                );
+
+                let after_broadcast = net.broadcast().saturating_add(1);
+                assert!(
+                    IpAddressV4orV6::is_global(&after_broadcast),
+                    "{}: expect global: (after) {usage}",
+                    after_broadcast
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_web_services_document_no_charset() {
         let async_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()
             .unwrap();
 
-        let client = (*WEB_CLIENT).as_ref().unwrap();
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
 
-        // TODO: It would be better to use a mock web server here instead of an actual external service;
-        // however, this is still better than nothing, and captive.apple.com is a reasonably stable endpoint
-        // to use for this purpose.
-        let url = "http://captive.apple.com";
+            then.status(200)
+                .header("content-type", "text/html")
+                .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
 
         let tests = [
             None,
@@ -1139,9 +1255,9 @@ mod tests {
         ];
         for encoding in tests {
             let content = async_runtime
-                .block_on(get_web_service_document(
+                .block_on(get_web_service_document::<false>(
                     client,
-                    &Url::parse(url).unwrap(),
+                    &Url::parse(url.as_ref()).unwrap(),
                     &Duration::from_secs(30),
                     encoding,
                 ))
@@ -1152,10 +1268,194 @@ mod tests {
                 "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n"
             );
         }
+
+        weg_page_mock.assert_calls(tests.len());
     }
 
     #[test]
-    fn test_get_plugin_output() {
+    fn test_web_services_document_explicit_charset() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let expected_content =
+            "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n";
+        let expected_content_utf16: Vec<u8> = expected_content
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+
+        let server = MockServer::start();
+        let weg_page_mock_utf8 = server.mock(|when, then| {
+            when.method(GET).path("/utf8");
+            then.status(200)
+                .header("content-type", "text/html; charset=utf8")
+                .body(expected_content);
+        });
+        let weg_page_mock_utf16le = server.mock(|when, then| {
+            when.method(GET).path("/utf16le");
+            then.status(200)
+                .header("content-type", "text/html; charset=utf-16le")
+                .body(expected_content_utf16);
+        });
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let test_paths = ["/utf8", "/utf16le"];
+        for test_path in test_paths {
+            let content = async_runtime
+                .block_on(get_web_service_document::<false>(
+                    client,
+                    &Url::parse(server.url(test_path).as_ref()).unwrap(),
+                    &Duration::from_secs(30),
+                    None,
+                ))
+                .unwrap();
+
+            assert_eq!(content, expected_content);
+        }
+
+        weg_page_mock_utf8.assert();
+        weg_page_mock_utf16le.assert();
+    }
+
+    #[test]
+    fn test_web_services_document_timeout() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+
+            then.status(200)
+                .header("content-type", "text/html")
+                .delay(Duration::from_secs(10))
+                .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document::<true>(
+            client,
+            &Url::parse(url.as_ref()).unwrap(),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_err(),
+            "expected error; got instead: {:?}",
+            content.unwrap()
+        );
+        let error = content.unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.ends_with("TimedOut"), "msg={msg:?}");
+
+        weg_page_mock.assert();
+    }
+
+    #[test]
+    fn test_web_services_document_not_found() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+
+            then.status(404)
+                .header("content-type", "text/html")
+                .body("<HTML><HEAD><TITLE>404</TITLE></HEAD><BODY>Not found</BODY></HTML>\n");
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document::<true>(
+            client,
+            &Url::parse(url.as_ref()).unwrap(),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_err(),
+            "expected error; got instead: {:?}",
+            content.unwrap()
+        );
+        let error = content.unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains(": 404"), "msg={msg:?}");
+
+        weg_page_mock.assert();
+    }
+
+    #[test]
+    fn test_web_services_document_too_long() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        // This is a whimsical construction that should exceed our maximum document size.
+        let response_data = {
+            let prefix = b"A whole lot of whitespace follows!\n";
+            let suffix = b"That was A LOT of whitespace!\n";
+            let data_len = MAX_WEB_SERVICE_DOCUMENT_LENGTH as usize + prefix.len() + suffix.len();
+            let mut data = vec![0x20u8; data_len];
+
+            data[0..(prefix.len())].copy_from_slice(prefix);
+            data[(data_len - suffix.len())..].copy_from_slice(suffix);
+            data
+        };
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+
+            then.status(200)
+                .header("content-type", "text/html")
+                .body(response_data);
+        });
+        let url = &server.url("/");
+
+        let client = (*WEB_CLIENT).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document::<true>(
+            client,
+            &Url::parse(url.as_ref()).unwrap(),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_err(),
+            "expected error; got instead: {:?}",
+            content.unwrap()
+        );
+        let error = content.unwrap_err();
+        let msg = error.to_string();
+        assert!(
+            msg.contains("Content-Length") && msg.contains(") too long (max="),
+            "msg={msg:?}"
+        );
+
+        weg_page_mock.assert();
+    }
+
+    #[test]
+    fn test_plugin_output_no_encoding() {
         let async_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
@@ -1177,6 +1477,92 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
+    fn test_plugin_output_utf16() {
+        let encoding = encoding_rs::UTF_16LE;
+
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let msg = "Hello, world!";
+
+        let command: StringOrStringVec = if cfg!(windows) {
+            StringOrStringVec::Vec(
+                    vec!(
+                        format!(
+                            "{}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                            std::env::var("SystemRoot").unwrap()
+                        ),
+                        "-NoLogo".to_owned(),
+                        "-NoProfile".to_owned(),
+                        "-NonInteractive".to_owned(),
+                        "-WindowStyle".to_owned(), "hidden".to_owned(),
+                        "-Command".to_owned(),
+                        format!("[Console]::OutputEncoding = [System.Text.Encoding]::Unicode; Write-Host '{msg}'")
+                    )
+                )
+        } else if cfg!(unix) {
+            let mut cmd_str = String::with_capacity(msg.len() * 8 + 16);
+
+            cmd_str.push_str("printf '");
+            for code_unit in msg.encode_utf16() {
+                for b in code_unit.to_le_bytes() {
+                    cmd_str.push_str(format!("\\x{b:02X}").as_str());
+                }
+            }
+            cmd_str.push_str("'");
+
+            StringOrStringVec::String(cmd_str)
+        } else {
+            panic!("platform not supported for this test");
+        };
+
+        let content = async_runtime
+            .block_on(get_plugin_output(
+                &command,
+                &Duration::from_secs(10),
+                Some(encoding),
+            ))
+            .unwrap();
+        let content_trimmed = content.trim_end();
+        assert_eq!(content_trimmed, msg);
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn test_plugin_timeout() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let command = if cfg!(windows) {
+            StringOrStringVec::String("timeout /t 10 >NUL && echo Hello!".to_string())
+        } else {
+            StringOrStringVec::String("sleep 10 && echo Hello!".to_string())
+        };
+
+        let result = async_runtime.block_on(get_plugin_output(
+            &command,
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            result.is_err(),
+            "expected error; got: {:?}",
+            result.unwrap()
+        );
+        let error = result.unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains("plugin timed out"), "msg={msg:?}");
+    }
+
+    #[test]
     fn test_algorithm_combos_empty() {
         let vec = Vec::<AlgorithmSpecification>::new();
         for is_ipv6 in [false, true] {
@@ -1191,22 +1577,27 @@ mod tests {
     }
 
     static ALGO_DEFAULT_PUB_IP: LazyLock<AlgorithmSpecification> =
-        LazyLock::new(|| AlgorithmSpecification::DefaultPublicIp {});
+        LazyLock::new(|| AlgorithmSpecification::DefaultPublicIp {
+            skip_empty_result: false,
+        });
     static ALGO_IGP: LazyLock<AlgorithmSpecification> =
         LazyLock::new(|| AlgorithmSpecification::InternetGatewayProtocol {
             timeout: Duration::from_secs(10),
+            skip_empty_result: false,
         });
     static ALGO_PLUGIN_SIMPLE: LazyLock<AlgorithmSpecification> =
         LazyLock::new(|| AlgorithmSpecification::Plugin {
             command: StringOrStringVec::String("/bin/false".to_string()),
             timeout: Duration::from_secs(10),
             encoding: None,
+            skip_empty_result: false,
         });
     static ALGO_WEB_SERVICE_SIMPLE: LazyLock<AlgorithmSpecification> =
         LazyLock::new(|| AlgorithmSpecification::WebService {
             url: Url::parse("http://whatismyipaddress.com/").unwrap(),
             timeout: Duration::from_secs(10),
             default_encoding: None,
+            skip_empty_result: false,
         });
 
     #[test]
@@ -1306,6 +1697,7 @@ mod tests {
             url: Url::parse("http://example.com/").unwrap(),
             timeout: Duration::from_secs(1),
             default_encoding: None,
+            skip_empty_result: false,
         };
         let vec = vec![other, ALGO_WEB_SERVICE_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
@@ -1327,6 +1719,7 @@ mod tests {
             url,
             timeout,
             default_encoding,
+            skip_empty_result: _,
         } = &*ALGO_WEB_SERVICE_SIMPLE
         {
             AlgorithmSpecification::WebService {
@@ -1337,6 +1730,7 @@ mod tests {
                 } else {
                     Some(encoding_rs::UTF_8)
                 },
+                skip_empty_result: true,
             }
         } else {
             panic!("It should not be possible to get here.");
@@ -1360,6 +1754,7 @@ mod tests {
             command: StringOrStringVec::String("/not/a/real/command".to_string()),
             timeout: Duration::from_secs(1),
             encoding: None,
+            skip_empty_result: false,
         };
         let vec = vec![other, ALGO_PLUGIN_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
@@ -1381,6 +1776,7 @@ mod tests {
             command,
             timeout,
             encoding,
+            skip_empty_result: _,
         } = &*ALGO_PLUGIN_SIMPLE
         {
             AlgorithmSpecification::Plugin {
@@ -1391,6 +1787,7 @@ mod tests {
                 } else {
                     Some(encoding_rs::UTF_8)
                 },
+                skip_empty_result: true,
             }
         } else {
             panic!("It should not be possible to get here.");
