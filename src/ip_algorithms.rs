@@ -288,7 +288,10 @@ pub enum AlgorithmSpecification {
     None,
 
     #[serde(rename = "default_public_ip")]
-    DefaultPublicIp,
+    DefaultPublicIp{
+        #[serde(default)]
+        skip_empty_result: bool,
+    },
 
     #[serde(rename = "internet_gateway_protocol")]
     InternetGatewayProtocol {
@@ -297,7 +300,11 @@ pub enum AlgorithmSpecification {
             with = "serde_duration_f64",
             default = "serde_default_algo_timeout"
         )]
+
         timeout: Duration,
+
+        #[serde(default)]
+        skip_empty_result: bool,
     },
 
     #[serde(rename = "web_service")]
@@ -314,6 +321,9 @@ pub enum AlgorithmSpecification {
 
         #[serde(default, with = "serde_encoding")]
         default_encoding: Option<&'static Encoding>,
+
+        #[serde(default)]
+        skip_empty_result: bool,
     },
 
     #[serde(rename = "plugin")]
@@ -329,6 +339,9 @@ pub enum AlgorithmSpecification {
 
         #[serde(default, with = "serde_encoding")]
         encoding: Option<&'static Encoding>,
+
+        #[serde(default)]
+        skip_empty_result: bool,
     },
 }
 
@@ -362,7 +375,7 @@ impl AlgorithmSpecification {
                         ));
                     }
                 }
-                AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => {
+                AlgorithmSpecification::InternetGatewayProtocol { timeout: _, skip_empty_result: _ } => {
                     if for_ipv6 {
                         return Err(anyhow!("algorithm '{algo_name}' cannot be used with IPv6"));
                     }
@@ -381,24 +394,37 @@ impl AlgorithmSpecification {
         T: IpAddressV4orV6,
         <T as FromStr>::Err: Display,
     {
+        let result_can_be_skipped: bool;
         let algo_result = match self {
             AlgorithmSpecification::None => {
                 panic!("Unreachable code was somehow reached")
             }
-            AlgorithmSpecification::DefaultPublicIp => T::get_default_public_ip().await,
-            AlgorithmSpecification::InternetGatewayProtocol { timeout } => {
+            AlgorithmSpecification::DefaultPublicIp { skip_empty_result } => {
+                result_can_be_skipped = *skip_empty_result;
+                T::get_default_public_ip().await
+            },
+            AlgorithmSpecification::InternetGatewayProtocol { timeout, skip_empty_result } => {
+                result_can_be_skipped = *skip_empty_result;
                 T::get_igd_public_ip(timeout).await
             }
             AlgorithmSpecification::WebService {
                 url,
                 timeout,
                 default_encoding,
-            } => get_web_service_ip::<T>(url, timeout, *default_encoding).await,
+                skip_empty_result,
+            } => {
+                result_can_be_skipped = *skip_empty_result;
+                get_web_service_ip::<T>(url, timeout, *default_encoding).await
+            },
             AlgorithmSpecification::Plugin {
                 command,
                 timeout,
                 encoding,
-            } => get_plugin_ip::<T>(command, timeout, *encoding).await,
+                skip_empty_result,
+            } => {
+                result_can_be_skipped = *skip_empty_result;
+                get_plugin_ip::<T>(command, timeout, *encoding).await
+            }     
         }?;
 
         let algo_result_only_globals: Vec<T> = algo_result
@@ -406,6 +432,12 @@ impl AlgorithmSpecification {
             .filter(|ip| (*ip).is_global())
             .map(|ip| *ip)
             .collect();
+
+        if algo_result_only_globals.is_empty() && !result_can_be_skipped {
+            return Err(anyhow!(
+                "algorithm '{self}' did not find any global addresses"
+            ));
+        }
         Ok(algo_result_only_globals)
     }
 
@@ -423,12 +455,8 @@ impl AlgorithmSpecification {
             match algo_result {
                 Ok(ips) => {
                     debug!("{ip_version}_algorithms[{idx}]: got addresses: {:?}", &ips);
-                    if ips.is_empty() {
-                        debug!("{ip_version}_algorithms[{idx}]: skipping empty result");
-                    } else {
-                        let ips_set: HashSet<_> = ips.into_iter().collect();
-                        return Ok(ips_set);
-                    }
+                    let ips_set: HashSet<_> = ips.into_iter().collect();
+                    return Ok(ips_set);
                 }
                 Err(msg) => {
                     warn!("{ip_version}_algorithms[{idx}] ({algo}): returned error: {msg}");
@@ -436,11 +464,13 @@ impl AlgorithmSpecification {
             };
         }
 
-        if !algos.is_empty() {
-            warn!("{ip_version}_algorithms: none of the configured algorithms found any results; returning empty-set.");
+        if algos.is_empty() {
+            warn!("{ip_version}_algorithms: no algorithms are configured");
+            Ok(HashSet::new())
         }
-
-        Ok(HashSet::<T>::new())
+        else {
+            Err(anyhow!("{ip_version}_algorithms: all configured algorithms failed!"))
+        }
     }
 
     #[cfg(test)]
@@ -451,7 +481,7 @@ impl AlgorithmSpecification {
     #[cfg(test)]
     pub fn supports_ipv6(&self) -> bool {
         match self {
-            AlgorithmSpecification::InternetGatewayProtocol { timeout: _ } => false,
+            AlgorithmSpecification::InternetGatewayProtocol { timeout: _, skip_empty_result: _ } => false,
             _ => true,
         }
     }
@@ -475,17 +505,23 @@ impl Display for AlgorithmSpecification {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             Self::None => f.write_str("none"),
-            Self::DefaultPublicIp => f.write_str("default_public_ip"),
-            Self::InternetGatewayProtocol { timeout: _ } => write!(f, "internet_gateway_protocol"),
+            Self::DefaultPublicIp{ skip_empty_result: _ } => {
+                f.write_str("default_public_ip")
+            },
+            Self::InternetGatewayProtocol { timeout: _, skip_empty_result: _ } => {
+                write!(f, "internet_gateway_protocol")
+            },
             Self::WebService {
                 url,
                 timeout: _,
                 default_encoding: _,
+                skip_empty_result: _,
             } => write!(f, "web_service:\"{}\"", url.as_str()),
             Self::Plugin {
                 command,
                 timeout: _,
                 encoding: _,
+                skip_empty_result: _,
             } => write!(f, "plugin:\"{command}\""),
         }
     }
@@ -1520,22 +1556,27 @@ mod tests {
     }
 
     static ALGO_DEFAULT_PUB_IP: LazyLock<AlgorithmSpecification> =
-        LazyLock::new(|| AlgorithmSpecification::DefaultPublicIp {});
+        LazyLock::new(|| AlgorithmSpecification::DefaultPublicIp {
+            skip_empty_result: false,
+        });
     static ALGO_IGP: LazyLock<AlgorithmSpecification> =
         LazyLock::new(|| AlgorithmSpecification::InternetGatewayProtocol {
             timeout: Duration::from_secs(10),
+            skip_empty_result: false,
         });
     static ALGO_PLUGIN_SIMPLE: LazyLock<AlgorithmSpecification> =
         LazyLock::new(|| AlgorithmSpecification::Plugin {
             command: StringOrStringVec::String("/bin/false".to_string()),
             timeout: Duration::from_secs(10),
             encoding: None,
+            skip_empty_result: false,
         });
     static ALGO_WEB_SERVICE_SIMPLE: LazyLock<AlgorithmSpecification> =
         LazyLock::new(|| AlgorithmSpecification::WebService {
             url: Url::parse("http://whatismyipaddress.com/").unwrap(),
             timeout: Duration::from_secs(10),
             default_encoding: None,
+            skip_empty_result: false,
         });
 
     #[test]
@@ -1635,6 +1676,7 @@ mod tests {
             url: Url::parse("http://example.com/").unwrap(),
             timeout: Duration::from_secs(1),
             default_encoding: None,
+            skip_empty_result: false,
         };
         let vec = vec![other, ALGO_WEB_SERVICE_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
@@ -1656,6 +1698,7 @@ mod tests {
             url,
             timeout,
             default_encoding,
+            skip_empty_result: _,
         } = &*ALGO_WEB_SERVICE_SIMPLE
         {
             AlgorithmSpecification::WebService {
@@ -1666,6 +1709,7 @@ mod tests {
                 } else {
                     Some(encoding_rs::UTF_8)
                 },
+                skip_empty_result: true,
             }
         } else {
             panic!("It should not be possible to get here.");
@@ -1689,6 +1733,7 @@ mod tests {
             command: StringOrStringVec::String("/not/a/real/command".to_string()),
             timeout: Duration::from_secs(1),
             encoding: None,
+            skip_empty_result: false,
         };
         let vec = vec![other, ALGO_PLUGIN_SIMPLE.clone()];
         for is_ipv6 in [false, true] {
@@ -1710,6 +1755,7 @@ mod tests {
             command,
             timeout,
             encoding,
+            skip_empty_result: _,
         } = &*ALGO_PLUGIN_SIMPLE
         {
             AlgorithmSpecification::Plugin {
@@ -1720,6 +1766,7 @@ mod tests {
                 } else {
                     Some(encoding_rs::UTF_8)
                 },
+                skip_empty_result: true,
             }
         } else {
             panic!("It should not be possible to get here.");
