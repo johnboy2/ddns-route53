@@ -39,7 +39,10 @@ pub async fn find_zone_id(
                 }
             };
             if best_match_len < zone_name_normalized.len()
-                && host_is_in_domain_normalized(host_name_normalized.as_ref(), zone.name())
+                && host_is_in_domain_normalized(
+                    host_name_normalized.as_ref(),
+                    zone_name_normalized.as_ref(),
+                )
             {
                 // A new "best so far" has been found.
 
