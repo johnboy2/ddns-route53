@@ -21,6 +21,7 @@ use log::{debug, error, trace, warn};
 use mime::Mime;
 use netdev::{get_default_interface, Interface};
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
+use reqwest::redirect::Policy;
 use reqwest::{Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -32,7 +33,7 @@ use crate::os_helpers::PlatformStringDecoder; // Import trait
 static DEFAULT_INTERFACE: LazyLock<Result<Interface, String>> =
     LazyLock::new(get_default_interface);
 static WEB_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
-    LazyLock::new(|| ClientBuilder::new().build());
+    LazyLock::new(|| ClientBuilder::new().redirect(Policy::none()).build());
 
 const DEFAULT_ALGO_TIMEOUT_SECS: u64 = 10;
 const MAX_WEB_SERVICE_DOCUMENT_LENGTH: u64 = 65536;
@@ -1027,6 +1028,7 @@ mod tests {
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
             ClientBuilder::new()
+                .redirect(Policy::none())
                 .danger_accept_invalid_certs(true)
                 .build()
         });
