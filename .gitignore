@@ -2,6 +2,3 @@
 /.idea
 /.vscode
 /.zed
-Cargo.lock
-ddns-route53.conf
-ddns-route53.log
