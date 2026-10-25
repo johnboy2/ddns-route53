@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: [MIT] OR [Apache-2.0]
 
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 use tokio::task::{JoinHandle, LocalSet};
 
 mod addresses;
@@ -170,26 +169,23 @@ async fn main() -> anyhow::Result<()> {
     )
     .await
     {
-        Ok(result) => {
-            match result {
-                UpdateHostResult::NotRequired => {
-                    info!("Update not required");
-                }
-                UpdateHostResult::UpdateSuccessful => {
-                    info!("Update successful");
-                    trace!(
-                        "Route53 update took {:.2} seconds",
-                        update_time.elapsed().as_secs_f32()
-                    );
-                }
-                UpdateHostResult::UpdateSkipped => {
-                    warn!("Update required, but skipped due to --no_update");
-                    exit(78); // Code matches the BSD definition for "EX_CONFIG".
-                }
+        Ok(result) => match result {
+            UpdateHostResult::NotRequired => {
+                info!("Update not required");
             }
-        }
+            UpdateHostResult::UpdateSuccessful => {
+                info!("Update successful");
+                trace!(
+                    "Route53 update took {:.2} seconds",
+                    update_time.elapsed().as_secs_f32()
+                );
+            }
+            UpdateHostResult::UpdateSkipped => {
+                warn!("Update required, but skipped due to --no_update");
+            }
+        },
         Err(e) => {
-            error!("Update failed: {e:#}")
+            return Err(anyhow::Error::msg(format!("Update failed: {e:#}")));
         }
     };
     trace!(
