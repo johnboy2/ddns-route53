@@ -36,6 +36,9 @@ async fn main() -> anyhow::Result<()> {
 
     let arc_config = Rc::new(config);
 
+    // Install a default crypto provider. We do this here because it should happen exactly once.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let local_set = LocalSet::new();
 
     let fut_ipv4 = {

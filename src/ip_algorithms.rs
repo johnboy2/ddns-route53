@@ -1019,6 +1019,36 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    static WEB_CLIENT_IGNORES_BAD_CERTS: LazyLock<Result<Client, reqwest::Error>> =
+        LazyLock::new(|| {
+            // SAFETY: Although this client needs a crypto provider, it's also possible that one
+            // was already configured. (If so, this fails with an Err containing the existing
+            // provider.)
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+            ClientBuilder::new()
+                .danger_accept_invalid_certs(true)
+                .build()
+        });
+
+    fn get_url(server: &MockServer, suffix: &str, https: bool) -> Url {
+        let base_result = server.url(suffix);
+        let proto_result = if https {
+            base_result.replace("http://", "https://")
+        } else {
+            base_result.replace("https://", "http://")
+        };
+        Url::parse(proto_result.as_str()).unwrap()
+    }
+
+    fn get_http_url(server: &MockServer, suffix: &str) -> Url {
+        get_url(server, suffix, false)
+    }
+
+    fn get_https_url(server: &MockServer, suffix: &str) -> Url {
+        get_url(server, suffix, true)
+    }
+
     use httpmock::prelude::*;
     use ipnet::{IpAdd, IpSub, Ipv4Net, Ipv6Net};
 
@@ -1244,7 +1274,6 @@ mod tests {
                 .header("content-type", "text/html")
                 .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
         });
-        let url = &server.url("/");
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
@@ -1257,7 +1286,7 @@ mod tests {
             let content = async_runtime
                 .block_on(get_web_service_document::<false>(
                     client,
-                    &Url::parse(url.as_ref()).unwrap(),
+                    &get_http_url(&server, "/"),
                     &Duration::from_secs(30),
                     encoding,
                 ))
@@ -1308,7 +1337,7 @@ mod tests {
             let content = async_runtime
                 .block_on(get_web_service_document::<false>(
                     client,
-                    &Url::parse(server.url(test_path).as_ref()).unwrap(),
+                    &get_http_url(&server, test_path),
                     &Duration::from_secs(30),
                     None,
                 ))
@@ -1338,13 +1367,12 @@ mod tests {
                 .delay(Duration::from_secs(10))
                 .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
         });
-        let url = &server.url("/");
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
         let content = async_runtime.block_on(get_web_service_document::<true>(
             client,
-            &Url::parse(url.as_ref()).unwrap(),
+            &get_http_url(&server, "/"),
             &Duration::from_secs_f32(0.1f32),
             None,
         ));
@@ -1377,13 +1405,12 @@ mod tests {
                 .header("content-type", "text/html")
                 .body("<HTML><HEAD><TITLE>404</TITLE></HEAD><BODY>Not found</BODY></HTML>\n");
         });
-        let url = &server.url("/");
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
         let content = async_runtime.block_on(get_web_service_document::<true>(
             client,
-            &Url::parse(url.as_ref()).unwrap(),
+            &get_http_url(&server, "/"),
             &Duration::from_secs_f32(0.1f32),
             None,
         ));
@@ -1428,13 +1455,12 @@ mod tests {
                 .header("content-type", "text/html")
                 .body(response_data);
         });
-        let url = &server.url("/");
 
         let client = (*WEB_CLIENT).as_ref().unwrap();
 
         let content = async_runtime.block_on(get_web_service_document::<true>(
             client,
-            &Url::parse(url.as_ref()).unwrap(),
+            &get_http_url(&server, "/"),
             &Duration::from_secs_f32(0.1f32),
             None,
         ));
@@ -1449,6 +1475,45 @@ mod tests {
         assert!(
             msg.contains("Content-Length") && msg.contains(") too long (max="),
             "msg={msg:?}"
+        );
+
+        weg_page_mock.assert();
+    }
+
+    #[test]
+    fn test_web_services_https() {
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        let server = MockServer::start();
+        let weg_page_mock = server.mock(|when, then| {
+            when.method(GET).path("/");
+            then.status(200)
+                .header("Content-Type", "text/html")
+                .body("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n");
+        });
+
+        let client = (*WEB_CLIENT_IGNORES_BAD_CERTS).as_ref().unwrap();
+
+        let content = async_runtime.block_on(get_web_service_document::<true>(
+            &client,
+            &get_https_url(&server, "/"),
+            &Duration::from_secs_f32(0.1f32),
+            None,
+        ));
+
+        assert!(
+            content.is_ok(),
+            "expected content; got instead: {:?}",
+            content.unwrap_err()
+        );
+        let content: String = content.unwrap();
+        assert!(
+            content.contains("<BODY>Success</BODY>"),
+            "content={content:?}"
         );
 
         weg_page_mock.assert();
