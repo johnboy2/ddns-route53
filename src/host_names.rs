@@ -54,7 +54,7 @@ pub fn normalize_host_name(host_name: &str) -> anyhow::Result<Cow<'_, str>> {
 
 fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
     const MAX_DNS_FQDN_LENGTH: usize = 255;
-    const MAX_DNS_LABEL_LENGTH: u32 = 64;
+    const MAX_DNS_LABEL_LENGTH: u32 = 63;
 
     if name.is_empty() {
         return Err(anyhow!("invalid host_name: cannot be empty"));
@@ -119,7 +119,7 @@ fn validate_idna_host_name(name: &str) -> anyhow::Result<()> {
             }
         }
 
-        if MAX_DNS_LABEL_LENGTH <= label_len {
+        if MAX_DNS_LABEL_LENGTH < label_len {
             return Err(anyhow!(
                 "invalid host_name: label {label_num} is too long (length {label_len} exceeds maximum of {MAX_DNS_LABEL_LENGTH})"
             ));
