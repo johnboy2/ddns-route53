@@ -21,7 +21,7 @@ use crate::ip_algorithms::AlgorithmSpecification;
 
 const DEFAULT_UPDATE_POLL_SECS: f64 = 30.0;
 const DEFAULT_UPDATE_TIMEOUT_SECS: f64 = 300.0;
-const DEFAULT_ROUTE53_TLL: i32 = 3600;
+const DEFAULT_ROUTE53_TTL: i32 = 3600;
 const DEFAULT_LOG_FILE_LEVEL: LevelFilter = LevelFilter::Info;
 const DEFAULT_LOG_FILE_LEVEL_OTHER: LevelFilter = LevelFilter::Off;
 const MAX_CONFIG_FILE_SIZE_BYTES: u64 = 65536;
@@ -487,7 +487,7 @@ impl Config {
         result.host_name_normalized = normalize_host_name(result.host_name.as_str())?.to_string();
 
         result.route53_record_ttl =
-            *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TLL) as i64;
+            *take_first_defined!(aws_route53_record_ttl).unwrap_or(&DEFAULT_ROUTE53_TTL) as i64;
 
         result.update_timeout = Duration::from_secs_f64(
             *take_first_defined!(update_timeout_seconds).unwrap_or(&DEFAULT_UPDATE_TIMEOUT_SECS),
