@@ -99,17 +99,19 @@ pub async fn get_resource_records(
         }
         match rrs.r#type {
             RrType::A => {
-                assert!(
-                    v4.is_none(),
-                    "received multiple 'A' records from Route53 (this should be impossible)"
-                );
+                if v4.is_some() {
+                    return Err(anyhow!(
+                        "received multiple 'A' records from Route53 (this should be impossible)"
+                    ));
+                }
                 v4 = Some(rrs);
             }
             RrType::Aaaa => {
-                assert!(
-                    v6.is_none(),
-                    "received multiple 'AAAA' records from Route53 (this should be impossible)"
-                );
+                if v6.is_some() {
+                    return Err(anyhow!(
+                        "received multiple 'AAAA' records from Route53 (this should be impossible)"
+                    ));
+                }
                 v6 = Some(rrs);
             }
             _ => {
