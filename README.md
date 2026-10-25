@@ -42,12 +42,12 @@ By default (i.e., _without_ this feature), any plugin output decoding is done as
 1. If the algorithm provides an `encoding` option, that will be used to decode the plugin's output.
 2. If the output begins with a byte-order mark for any of UTF-8, UTF-16LE, or UTF-16BE, the output will be decoded using the indicated encoding.
 3. If the first two bytes can be decoded as a valid UTF-16 code unit, and if the resulting code-point is in the range U+0000-U+00FF, then the plugin's output will be decoded with UTF-16 using the system's native byte-order.
-4. Finally, if all else fails, UTF-8 will be used.
+4. Finally, if all else fails, the output will be decoded as ASCII on Windows and Posix systems, and UTF-8 for anything else.
 
 With this feature installed, however, the fourth step instead becomes:
 
 4. Depending on your operating system:
-    - On Unix (including Linux and MacOS), the `LC_ALL`, `LC_CTYPE`, and `LANG` environment variables are read, in that order, for the first to specify a codeset component. (For a list of available codesets on your system, you can often use the `iconv -l` command.) If a supported codeset is found, that will be used to decode the plugin output using the native iconv library. If no codeset is found, decoding falls back on UTF-8.
+    - On Unix (including Linux and MacOS), the `LC_ALL`, `LC_CTYPE`, and `LANG` environment variables are read, in that order, for the first to specify a codeset component. (For a list of available codesets on your system, you can often use the `iconv -l` command.) If a supported codeset is found, that will be used to decode the plugin output using the native iconv library. If no codeset is found, decoding falls back on the C locale.
     - On Windows, the active code page (i.e., the output from running the `chcp` command from a terminal window) will be used to decode the plugin output using Windows' native API. There is no fallback from this case, since Windows systems _always_ have an active code page.
     - For all other systems, UTF-8 remains the fallback decoder (i.e., just as if this feature wasn't installed).
 
