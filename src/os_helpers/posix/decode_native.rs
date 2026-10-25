@@ -89,7 +89,11 @@ mod tests {
         assert!(decoder.name().len() != 0);
 
         if decoder.name() == "C" {
-            assert!(decoder.code_set.is_none(), "{}", decoder.code_set.unwrap());
+            assert!(
+                decoder.code_set.is_none(),
+                "{}",
+                decoder.code_set.as_ref().unwrap()
+            );
         } else {
             assert!(decoder.code_set.is_some());
         }
@@ -166,9 +170,12 @@ mod tests {
 
     #[test]
     fn test_code_set_iso_8859_1() {
+        let decoder = CodeSetDecoder {
+            code_set: Some(Cow::Borrowed("ISO8859-1")),
+        };
         let data_iso8859_1 = b"In for a \xA2, in for a \xA3.";
         let data = "In for a ¢, in for a £.";
-        let converted = decoder.decode(&data_iso8859_1);
+        let converted = decoder.decode(data_iso8859_1.as_ref());
         assert!(
             converted.is_ok(),
             "decode error: {}",
@@ -179,9 +186,12 @@ mod tests {
 
     #[test]
     fn test_code_set_iso_8859_15() {
+        let decoder = CodeSetDecoder {
+            code_set: Some(Cow::Borrowed("ISO8859-15")),
+        };
         let data_iso8859_15 = b"In for a \xA2, in for a \xA4.";
         let data = "In for a ¢, in for a €.";
-        let converted = decoder.decode(&data_iso8859_15);
+        let converted = decoder.decode(data_iso8859_15.as_ref());
         assert!(
             converted.is_ok(),
             "decode error: {}",
